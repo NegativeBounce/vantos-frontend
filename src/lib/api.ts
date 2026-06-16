@@ -33,6 +33,19 @@ export type VesselPosition = {
 export const getPositions = () =>
   apiGet<{ status: string; count: number; vessels: VesselPosition[] }>("/api/positions");
 
+export type DataSource = {
+  id: string;
+  provider: string;
+  name: string;
+  baseUrl: string | null;
+  authType: string;
+  status: string;
+  keyHint: string | null;
+  updatedAt: string;
+};
+export const getDataSources = () =>
+  apiGet<{ status: string; dataSources: DataSource[] }>("/api/data-sources");
+
 export type AreaSearchResult = {
   status: string;
   region?: string;
