@@ -175,6 +175,38 @@ export type DataSource = {
 };
 export const getDataSources = () => apiGet<{ status: string; dataSources: DataSource[] }>("/api/data-sources");
 
+// ---- Data Docked usage / credit telemetry ----
+export type IngestionRun = {
+  id: string;
+  endpoint: string;
+  status: string;
+  records: number;
+  credits_estimated: number | null;
+  credits_before: number | null;
+  credits_after: number | null;
+  credits_spent: number | null;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
+  region_name: string | null;
+};
+export type CreditSpendRow = { endpoint: string; runs: number; credits_spent: number; records: number };
+export const getIngestionRuns = (limit = 25) =>
+  apiGet<{ status: string; runs: IngestionRun[]; summary: CreditSpendRow[] }>(`/api/datadocked/runs?limit=${limit}`);
+
+// ---- Per-vessel enrichment ----
+export type VesselEnrichment = {
+  status: string;
+  mmsi: string;
+  curated: Record<string, string | number>;
+  detail: unknown;
+  creditsSpent: number | null;
+  cachedAt: string;
+  error?: string;
+};
+export const enrichVessel = (mmsi: string) =>
+  apiGet<VesselEnrichment>(`/api/vessels/${encodeURIComponent(mmsi)}/enrich`);
+
 export type AreaSearchResult = {
   status: string;
   region?: string;

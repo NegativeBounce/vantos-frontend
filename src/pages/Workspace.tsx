@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import MapView, { type PickedVessel } from "../components/MapView";
 import Modal from "../components/Modal";
-import { getRegions, getPositions, getVesselTrack, getAisGaps, searchArea, setRegionCollection, type AreaSearchResult } from "../lib/api";
+import { getRegions, getPositions, getVesselTrack, getAisGaps, enrichVessel, searchArea, setRegionCollection, type AreaSearchResult } from "../lib/api";
 
 const REPORT_TYPES = ["Insurance Risk Advisory", "Weekly Maritime Intelligence", "Vessel Captain Advisory"];
 type Tool = "layers" | "vessels" | "area" | "regions" | "gaps";
@@ -35,6 +35,15 @@ export default function Workspace() {
       .filter((p) => Number.isFinite(p.longitude) && Number.isFinite(p.latitude))
       .map((p) => [p.longitude, p.latitude] as [number, number]);
   }, [tracksOn, track.data]);
+
+  // Per-vessel Data Docked enrichment (user-triggered — spends credits).
+  const [enrichMmsi, setEnrichMmsi] = useState<string | null>(null);
+  const enrich = useQuery({
+    queryKey: ["enrich", enrichMmsi],
+    queryFn: () => enrichVessel(enrichMmsi as string),
+    enabled: !!enrichMmsi,
+    staleTime: 6 * 60 * 60_000,
+  });
 
   // Dark-shipping / AIS-gap indicators (opt-in layer).
   const [gapsOn, setGapsOn] = useState(false);
@@ -190,11 +199,50 @@ export default function Workspace() {
                   {selected.length > 8 && <li className="text-gray-500">+{selected.length - 8} more</li>}
                 </ul>
                 <div className="mt-2 space-y-1">
+                  {selected.length === 1 && selected[0].mmsi && (
+                    <button
+                      onClick={() => setEnrichMmsi(selected[0].mmsi)}
+                      className="w-full rounded bg-sky-600 px-2 py-1 font-medium text-white hover:bg-sky-500"
+                    >
+                      Enrich (Data Docked)
+                    </button>
+                  )}
                   <button onClick={() => hideVessels(selected)} className="w-full rounded bg-amber-600 px-2 py-1 font-medium text-black hover:bg-amber-500">
                     Remove from display
                   </button>
                   <button disabled className="w-full rounded border border-white/10 px-2 py-1 text-gray-500">Report on selected (soon)</button>
                 </div>
+
+                {selected.length === 1 && enrichMmsi === selected[0].mmsi && (
+                  <div className="mt-2 rounded border border-sky-500/20 bg-sky-500/5 p-2 text-[11px]">
+                    {enrich.isLoading ? (
+                      <p className="text-gray-400">Fetching particulars from Data Docked…</p>
+                    ) : enrich.data?.status === "error" || enrich.isError ? (
+                      <p className="text-amber-400">Enrichment failed: {enrich.data?.error ?? (enrich.error as Error)?.message}</p>
+                    ) : enrich.data ? (
+                      <>
+                        <div className="mb-1 flex items-center justify-between">
+                          <span className="font-medium text-sky-300">Vessel particulars</span>
+                          {enrich.data.creditsSpent != null && (
+                            <span className="text-[10px] text-gray-500">{enrich.data.creditsSpent} credit{enrich.data.creditsSpent === 1 ? "" : "s"}</span>
+                          )}
+                        </div>
+                        {Object.keys(enrich.data.curated).length === 0 ? (
+                          <p className="text-gray-500">No particulars returned for this vessel.</p>
+                        ) : (
+                          <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5">
+                            {Object.entries(enrich.data.curated).map(([k, v]) => (
+                              <div key={k} className="flex justify-between gap-2">
+                                <dt className="text-gray-500">{k}</dt>
+                                <dd className="truncate text-gray-200" title={String(v)}>{String(v)}</dd>
+                              </div>
+                            ))}
+                          </dl>
+                        )}
+                      </>
+                    ) : null}
+                  </div>
+                )}
               </>
             )}
           </div>

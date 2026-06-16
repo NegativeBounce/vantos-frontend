@@ -1,7 +1,13 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import PageShell from "../components/PageShell";
-import { getDataSources, listUsers, createUser } from "../lib/api";
+import { getDataSources, listUsers, createUser, getIngestionRuns } from "../lib/api";
+
+function fmtTime(s: string | null): string {
+  if (!s) return "—";
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
+}
 
 const ROLES = ["admin", "analyst", "viewer"];
 
@@ -9,6 +15,7 @@ export default function AdminPage() {
   const qc = useQueryClient();
   const sources = useQuery({ queryKey: ["dataSources"], queryFn: getDataSources });
   const users = useQuery({ queryKey: ["users"], queryFn: listUsers });
+  const runs = useQuery({ queryKey: ["ingestionRuns"], queryFn: () => getIngestionRuns(25), refetchInterval: 30000 });
 
   const [mode, setMode] = useState<"manual" | "invite">("manual");
   const [name, setName] = useState("");
@@ -158,6 +165,51 @@ Role: ${created.role}`}
           </table>
         </div>
         <p className="mt-2 text-[11px] text-gray-600">Keys are stored encrypted server-side (only a masked hint is shown). Adding/editing keys wires up next.</p>
+      </section>
+
+      {/* Data Docked usage / credit spend */}
+      <section className="mt-4 rounded-lg border border-white/10 bg-black/30 p-4">
+        <h2 className="text-sm font-medium text-gray-200">Data Docked usage (measured credit spend)</h2>
+
+        {/* 24h summary per endpoint */}
+        <div className="mt-3 flex flex-wrap gap-2">
+          {runs.data?.summary?.map((s) => (
+            <div key={s.endpoint} className="rounded-md border border-white/10 bg-black/20 px-3 py-2 text-xs">
+              <div className="font-mono text-gray-300">{s.endpoint}</div>
+              <div className="text-gray-500">
+                <span className="text-amber-400">{s.credits_spent}</span> credits · {s.runs} run{s.runs === 1 ? "" : "s"} · {s.records} rec · 24h
+              </div>
+            </div>
+          ))}
+          {!runs.data?.summary?.length && (
+            <p className="text-xs text-gray-500">{runs.isLoading ? "Loading…" : "No paid Data Docked calls in the last 24h."}</p>
+          )}
+        </div>
+
+        {/* Recent runs */}
+        <div className="mt-3 overflow-hidden rounded-md border border-white/10">
+          <table className="w-full text-xs">
+            <thead className="bg-white/5 text-gray-400">
+              <tr>{["When", "Endpoint", "Region", "Status", "Records", "Spent"].map((h) => <th key={h} className="px-3 py-2 text-left font-medium">{h}</th>)}</tr>
+            </thead>
+            <tbody className="text-gray-300">
+              {runs.data?.runs?.map((r) => (
+                <tr key={r.id} className="border-t border-white/5">
+                  <td className="px-3 py-2 text-gray-400">{fmtTime(r.finished_at ?? r.started_at)}</td>
+                  <td className="px-3 py-2 font-mono">{r.endpoint}</td>
+                  <td className="px-3 py-2 text-gray-400">{r.region_name ?? "—"}</td>
+                  <td className="px-3 py-2"><span className={r.status === "success" ? "text-emerald-400" : r.status === "error" ? "text-amber-400" : "text-gray-400"}>{r.status}</span></td>
+                  <td className="px-3 py-2 text-gray-400">{r.records}</td>
+                  <td className="px-3 py-2 font-mono text-amber-400">{r.credits_spent != null ? r.credits_spent : "—"}</td>
+                </tr>
+              ))}
+              {!runs.data?.runs?.length && (
+                <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-500">{runs.isLoading ? "Loading…" : "No ingestion runs yet."}</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-2 text-[11px] text-gray-600">Spend is measured from the Data Docked credit balance before/after each paid call. "—" means the balance wasn't readable at the time.</p>
       </section>
     </PageShell>
   );
