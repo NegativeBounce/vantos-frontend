@@ -22,6 +22,7 @@ function toGeoJSON(vessels: VesselPosition[]): GeoJSON.FeatureCollection {
 export default function MapView({ vessels }: { vessels: VesselPosition[] }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
+  const fittedRef = useRef(false);
 
   // Create the map once.
   useEffect(() => {
@@ -80,6 +81,19 @@ export default function MapView({ vessels }: { vessels: VesselPosition[] }) {
     const apply = () => {
       const src = map.getSource("vessels") as mapboxgl.GeoJSONSource | undefined;
       if (src) src.setData(toGeoJSON(vessels));
+      // Auto-zoom to the vessels once, so they're visible on first load.
+      if (!fittedRef.current && vessels.length) {
+        const bounds = new mapboxgl.LngLatBounds();
+        vessels.forEach((v) => {
+          if (Number.isFinite(v.latitude) && Number.isFinite(v.longitude)) {
+            bounds.extend([v.longitude, v.latitude]);
+          }
+        });
+        if (!bounds.isEmpty()) {
+          map.fitBounds(bounds, { padding: 80, maxZoom: 8, duration: 0 });
+          fittedRef.current = true;
+        }
+      }
     };
     if (map.getSource("vessels")) apply();
     else map.once("load", apply);
