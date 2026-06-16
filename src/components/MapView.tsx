@@ -59,7 +59,7 @@ function gapsData(gaps: AisGap[] | null): GeoJSON.FeatureCollection {
       .filter((g) => Number.isFinite(g.latitude) && Number.isFinite(g.longitude))
       .map((g) => ({
         type: "Feature",
-        properties: { mmsi: g.mmsi, name: g.name, confidence: g.confidence, minutesAgo: g.minutesAgo },
+        properties: { mmsi: g.mmsi, name: g.name, confidence: g.confidence, minutesAgo: g.minutesAgo, tier: g.tier },
         geometry: { type: "Point", coordinates: [g.longitude, g.latitude] },
       })),
   };
@@ -185,40 +185,49 @@ export default function MapView({
 
       // AIS-gap / dark-shipping last-known-position markers (amber, above vessels).
       map.addSource("gaps", { type: "geojson", data: EMPTY });
+      // Color by tier when verified (confirmed=red, active=emerald, pending/unverified=gray),
+      // else by terrestrial-gap confidence (amber family).
+      const gapColor: mapboxgl.ExpressionSpecification = [
+        "match", ["get", "tier"],
+        "confirmed", "#ef4444",
+        "active", "#10b981",
+        "pending", "#64748b",
+        "unverified", "#64748b",
+        // 'terrestrial' (unverified) → grade by confidence
+        ["match", ["get", "confidence"], "high", "#f59e0b", "medium", "#f59e0b", "#a16207"],
+      ];
       map.addLayer({
         id: "gaps-halo",
         type: "circle",
         source: "gaps",
-        paint: {
-          "circle-radius": 11,
-          "circle-color": ["match", ["get", "confidence"], "high", "#ef4444", "medium", "#f59e0b", "#a16207"],
-          "circle-opacity": 0.18,
-        },
+        paint: { "circle-radius": 11, "circle-color": gapColor, "circle-opacity": 0.18 },
       });
       map.addLayer({
         id: "gaps-dot",
         type: "circle",
         source: "gaps",
-        paint: {
-          "circle-radius": 5,
-          "circle-color": ["match", ["get", "confidence"], "high", "#ef4444", "medium", "#f59e0b", "#a16207"],
-          "circle-stroke-color": "#0b0f14",
-          "circle-stroke-width": 1.5,
-        },
+        paint: { "circle-radius": 5, "circle-color": gapColor, "circle-stroke-color": "#0b0f14", "circle-stroke-width": 1.5 },
       });
       const gapPopup = new mapboxgl.Popup({ closeButton: false, offset: 12, className: "vantos-popup" });
       map.on("click", "gaps-dot", (e) => {
         const f = e.features?.[0];
         if (!f) return;
-        const p = f.properties as { mmsi?: string; name?: string; confidence?: string; minutesAgo?: number };
+        const p = f.properties as { mmsi?: string; name?: string; confidence?: string; minutesAgo?: number; tier?: string };
         const c = (f.geometry as GeoJSON.Point).coordinates as [number, number];
+        const tier = p.tier ?? "terrestrial";
+        const heading =
+          tier === "confirmed" ? "Confirmed AIS gap (satellite-corroborated)"
+          : tier === "active" ? "AIS active — seen on satellite"
+          : tier === "pending" || tier === "unverified" ? "AIS gap — verification pending"
+          : "Terrestrial AIS gap — not a confirmed detection";
+        const color = tier === "confirmed" ? "#ef4444" : tier === "active" ? "#10b981" : "#f59e0b";
         gapPopup
           .setLngLat(c)
           .setHTML(
             `<div style="font:12px system-ui;color:#e5e7eb">
-               <div style="color:#f59e0b;font-weight:600">AIS gap — not a confirmed detection</div>
+               <div style="color:${color};font-weight:600">${heading}</div>
                <div>${p.name || p.mmsi || "unknown"}</div>
-               <div style="color:#9ca3af">last seen ${p.minutesAgo}m ago · ${p.confidence} confidence</div>
+               <div style="color:#9ca3af">last AIS ${p.minutesAgo}m ago · ${p.confidence} confidence</div>
              </div>`
           )
           .addTo(map);

@@ -125,6 +125,15 @@ export const getVesselTrack = (mmsi: string, hours = 6) =>
     `/api/vessels/${encodeURIComponent(mmsi)}/track?hours=${hours}`
   );
 
+export type GapTier = "terrestrial" | "active" | "confirmed" | "pending" | "unverified";
+export type GapVerification = {
+  tier: GapTier;
+  dataSource: string | null;
+  seenAt: string | null;
+  ageMin: number | null;
+  checkedAt: string;
+  note: string;
+};
 export type AisGap = {
   mmsi: string | null;
   name: string | null;
@@ -137,17 +146,21 @@ export type AisGap = {
   minutesAgo: number;
   lastSeen: string;
   confidence: "low" | "medium" | "high";
+  tier: GapTier;
+  verification: GapVerification | null;
 };
 export type AisGapResult = {
   status: string;
   disclaimer: string;
+  satelliteNote?: string;
   gapMinutes: number;
+  verify: boolean;
   streamFresh: boolean;
   count: number;
   gaps: AisGap[];
 };
-export const getAisGaps = (minutes = 30) =>
-  apiGet<AisGapResult>(`/api/ais-gaps?minutes=${minutes}`);
+export const getAisGaps = (minutes = 30, verify = false) =>
+  apiGet<AisGapResult>(`/api/ais-gaps?minutes=${minutes}${verify ? "&verify=1" : ""}`);
 
 export type DataSource = {
   id: string;

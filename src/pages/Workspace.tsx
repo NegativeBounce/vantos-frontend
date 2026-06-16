@@ -38,8 +38,15 @@ export default function Workspace() {
 
   // Dark-shipping / AIS-gap indicators (opt-in layer).
   const [gapsOn, setGapsOn] = useState(false);
-  const gaps = useQuery({ queryKey: ["ais-gaps"], queryFn: () => getAisGaps(30), enabled: gapsOn, refetchInterval: 60000 });
+  const [verifySat, setVerifySat] = useState(false);
+  const gaps = useQuery({
+    queryKey: ["ais-gaps", verifySat],
+    queryFn: () => getAisGaps(30, verifySat),
+    enabled: gapsOn,
+    refetchInterval: 60000,
+  });
   const gapList = gapsOn ? gaps.data?.gaps ?? null : null;
+  const confirmedCount = gapList?.filter((g) => g.tier === "confirmed").length ?? 0;
 
   // Area search
   const [center, setCenter] = useState<{ lng: number; lat: number } | null>(null);
@@ -267,6 +274,17 @@ export default function Workspace() {
             <input type="checkbox" checked={gapsOn} onChange={(e) => setGapsOn(e.target.checked)} />
             Show indicators on map
           </label>
+          <label className={`mt-2 flex items-center gap-2 ${gapsOn ? "text-gray-300" : "text-gray-600"}`}>
+            <input type="checkbox" checked={verifySat} disabled={!gapsOn} onChange={(e) => setVerifySat(e.target.checked)} />
+            Verify via satellite (Data Docked)
+          </label>
+          {verifySat && (
+            <p className="mt-1 rounded bg-sky-500/10 p-1.5 text-[10px] leading-snug text-sky-300/90">
+              Bounces each terrestrial gap off Data Docked satellite to separate coverage gaps from genuine
+              dark vessels. Spends Data Docked credits (one bulk call per refresh, cached 30&nbsp;min). Vessels
+              seen on satellite are marked active and reappear on the map.
+            </p>
+          )}
 
           {!gapsOn ? (
             <p className="mt-2 text-gray-500">Enable the layer to scan AIS-collecting regions for vessels not seen in &gt;30 min (within 24h).</p>
@@ -281,26 +299,40 @@ export default function Workspace() {
               )}
               <div className="mt-2 text-gray-400">
                 <span className="font-mono text-amber-400">{gapList?.length}</span> gap{gapList?.length === 1 ? "" : "s"} (≥{gaps.data?.gapMinutes ?? 30} min)
+                {verifySat && confirmedCount > 0 && (
+                  <span className="ml-2 text-red-300">· <span className="font-mono">{confirmedCount}</span> satellite-confirmed</span>
+                )}
               </div>
-              <ul className="mt-1 max-h-72 space-y-1 overflow-auto">
-                {gapList?.map((g, i) => (
-                  <li key={(g.mmsi ?? "") + i} className="flex items-center justify-between rounded border border-white/10 px-2 py-1.5 text-[11px]">
-                    <div className="min-w-0">
-                      <div className="truncate text-gray-200">{g.name || g.mmsi || "unknown"}</div>
-                      <div className="text-[10px] text-gray-500">{g.region ?? "—"} · last seen {g.minutesAgo}m ago</div>
-                    </div>
-                    <span
-                      className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] ${
-                        g.confidence === "high" ? "bg-red-500/20 text-red-300"
-                          : g.confidence === "medium" ? "bg-amber-500/20 text-amber-300"
-                          : "bg-yellow-700/20 text-yellow-600"
-                      }`}
-                    >
-                      {g.confidence}
-                    </span>
-                  </li>
-                ))}
+              <ul className="mt-1 max-h-64 space-y-1 overflow-auto">
+                {gapList?.map((g, i) => {
+                  const tierStyle =
+                    g.tier === "confirmed" ? "bg-red-500/20 text-red-300"
+                      : g.tier === "active" ? "bg-emerald-500/20 text-emerald-300"
+                      : g.tier === "pending" || g.tier === "unverified" ? "bg-slate-500/20 text-slate-300"
+                      : g.confidence === "low" ? "bg-yellow-700/20 text-yellow-600" : "bg-amber-500/20 text-amber-300";
+                  const tierLabel =
+                    g.tier === "confirmed" ? "confirmed"
+                      : g.tier === "active" ? "active"
+                      : g.tier === "pending" ? "checking…"
+                      : g.tier === "unverified" ? "unverified"
+                      : "terrestrial";
+                  return (
+                    <li key={(g.mmsi ?? "") + i} className="rounded border border-white/10 px-2 py-1.5 text-[11px]">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="truncate text-gray-200">{g.name || g.mmsi || "unknown"}</div>
+                          <div className="text-[10px] text-gray-500">{g.region ?? "—"} · last AIS {g.minutesAgo}m ago</div>
+                        </div>
+                        <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] ${tierStyle}`}>{tierLabel}</span>
+                      </div>
+                      {g.verification?.note && <div className="mt-0.5 text-[10px] text-gray-500">{g.verification.note}</div>}
+                    </li>
+                  );
+                })}
               </ul>
+              {gaps.data?.satelliteNote && (
+                <p className="mt-2 text-[10px] leading-snug text-gray-600">{gaps.data.satelliteNote}</p>
+              )}
             </>
           )}
         </Modal>
