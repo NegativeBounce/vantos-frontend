@@ -125,6 +125,30 @@ export const getVesselTrack = (mmsi: string, hours = 6) =>
     `/api/vessels/${encodeURIComponent(mmsi)}/track?hours=${hours}`
   );
 
+export type AisGap = {
+  mmsi: string | null;
+  name: string | null;
+  type: string | null;
+  latitude: number;
+  longitude: number;
+  lastSpeed: number | null;
+  navStatus: string | null;
+  region: string | null;
+  minutesAgo: number;
+  lastSeen: string;
+  confidence: "low" | "medium" | "high";
+};
+export type AisGapResult = {
+  status: string;
+  disclaimer: string;
+  gapMinutes: number;
+  streamFresh: boolean;
+  count: number;
+  gaps: AisGap[];
+};
+export const getAisGaps = (minutes = 30) =>
+  apiGet<AisGapResult>(`/api/ais-gaps?minutes=${minutes}`);
+
 export type DataSource = {
   id: string;
   provider: string;

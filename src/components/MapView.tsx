@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import mapboxgl from "mapbox-gl";
-import type { VesselPosition } from "../lib/api";
+import type { VesselPosition, AisGap } from "../lib/api";
 
 mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN ?? "";
 
@@ -51,10 +51,25 @@ function trackData(track: [number, number][] | null): GeoJSON.FeatureCollection 
   return { type: "FeatureCollection", features };
 }
 
+function gapsData(gaps: AisGap[] | null): GeoJSON.FeatureCollection {
+  if (!gaps || !gaps.length) return EMPTY;
+  return {
+    type: "FeatureCollection",
+    features: gaps
+      .filter((g) => Number.isFinite(g.latitude) && Number.isFinite(g.longitude))
+      .map((g) => ({
+        type: "Feature",
+        properties: { mmsi: g.mmsi, name: g.name, confidence: g.confidence, minutesAgo: g.minutesAgo },
+        geometry: { type: "Point", coordinates: [g.longitude, g.latitude] },
+      })),
+  };
+}
+
 export default function MapView({
   vessels,
   selection,
   track,
+  gaps,
   onMapClick,
   aisVisible,
   boxSelectMode,
@@ -64,6 +79,7 @@ export default function MapView({
   vessels: VesselPosition[];
   selection: Selection;
   track: [number, number][] | null;
+  gaps: AisGap[] | null;
   onMapClick: (lng: number, lat: number) => void;
   aisVisible: boolean;
   boxSelectMode: boolean;
@@ -166,6 +182,49 @@ export default function MapView({
         filter: ["!", ["has", "point_count"]],
         paint: { "circle-radius": 5, "circle-color": "#38bdf8", "circle-stroke-color": "#0b0f14", "circle-stroke-width": 1 },
       });
+
+      // AIS-gap / dark-shipping last-known-position markers (amber, above vessels).
+      map.addSource("gaps", { type: "geojson", data: EMPTY });
+      map.addLayer({
+        id: "gaps-halo",
+        type: "circle",
+        source: "gaps",
+        paint: {
+          "circle-radius": 11,
+          "circle-color": ["match", ["get", "confidence"], "high", "#ef4444", "medium", "#f59e0b", "#a16207"],
+          "circle-opacity": 0.18,
+        },
+      });
+      map.addLayer({
+        id: "gaps-dot",
+        type: "circle",
+        source: "gaps",
+        paint: {
+          "circle-radius": 5,
+          "circle-color": ["match", ["get", "confidence"], "high", "#ef4444", "medium", "#f59e0b", "#a16207"],
+          "circle-stroke-color": "#0b0f14",
+          "circle-stroke-width": 1.5,
+        },
+      });
+      const gapPopup = new mapboxgl.Popup({ closeButton: false, offset: 12, className: "vantos-popup" });
+      map.on("click", "gaps-dot", (e) => {
+        const f = e.features?.[0];
+        if (!f) return;
+        const p = f.properties as { mmsi?: string; name?: string; confidence?: string; minutesAgo?: number };
+        const c = (f.geometry as GeoJSON.Point).coordinates as [number, number];
+        gapPopup
+          .setLngLat(c)
+          .setHTML(
+            `<div style="font:12px system-ui;color:#e5e7eb">
+               <div style="color:#f59e0b;font-weight:600">AIS gap — not a confirmed detection</div>
+               <div>${p.name || p.mmsi || "unknown"}</div>
+               <div style="color:#9ca3af">last seen ${p.minutesAgo}m ago · ${p.confidence} confidence</div>
+             </div>`
+          )
+          .addTo(map);
+      });
+      map.on("mouseenter", "gaps-dot", () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", "gaps-dot", () => (map.getCanvas().style.cursor = boxModeRef.current ? "crosshair" : ""));
 
       // Click a cluster → zoom in.
       map.on("click", "clusters", (e) => {
@@ -298,6 +357,17 @@ export default function MapView({
     if (map.getSource("track")) apply();
     else map.once("load", apply);
   }, [track]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      const src = map.getSource("gaps") as mapboxgl.GeoJSONSource | undefined;
+      if (src) src.setData(gapsData(gaps));
+    };
+    if (map.getSource("gaps")) apply();
+    else map.once("load", apply);
+  }, [gaps]);
 
   useEffect(() => {
     const map = mapRef.current;

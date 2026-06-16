@@ -2,10 +2,10 @@ import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import MapView, { type PickedVessel } from "../components/MapView";
 import Modal from "../components/Modal";
-import { getRegions, getPositions, getVesselTrack, searchArea, setRegionCollection, type AreaSearchResult } from "../lib/api";
+import { getRegions, getPositions, getVesselTrack, getAisGaps, searchArea, setRegionCollection, type AreaSearchResult } from "../lib/api";
 
 const REPORT_TYPES = ["Insurance Risk Advisory", "Weekly Maritime Intelligence", "Vessel Captain Advisory"];
-type Tool = "layers" | "vessels" | "area" | "regions";
+type Tool = "layers" | "vessels" | "area" | "regions" | "gaps";
 
 export default function Workspace() {
   const qc = useQueryClient();
@@ -35,6 +35,11 @@ export default function Workspace() {
       .filter((p) => Number.isFinite(p.longitude) && Number.isFinite(p.latitude))
       .map((p) => [p.longitude, p.latitude] as [number, number]);
   }, [tracksOn, track.data]);
+
+  // Dark-shipping / AIS-gap indicators (opt-in layer).
+  const [gapsOn, setGapsOn] = useState(false);
+  const gaps = useQuery({ queryKey: ["ais-gaps"], queryFn: () => getAisGaps(30), enabled: gapsOn, refetchInterval: 60000 });
+  const gapList = gapsOn ? gaps.data?.gaps ?? null : null;
 
   // Area search
   const [center, setCenter] = useState<{ lng: number; lat: number } | null>(null);
@@ -82,6 +87,7 @@ export default function Workspace() {
     { key: "vessels", label: "Vessels", badge: displayed.length },
     { key: "area", label: "Area Search" },
     { key: "regions", label: "Regions", badge: regionCount },
+    { key: "gaps", label: "AIS Gaps", badge: gapsOn ? gapList?.length ?? 0 : undefined },
   ];
 
   return (
@@ -90,6 +96,7 @@ export default function Workspace() {
         vessels={displayed}
         selection={center ? { lng: center.lng, lat: center.lat, radiusKm } : null}
         track={trackCoords}
+        gaps={gapList}
         onMapClick={(lng, lat) => setCenter({ lng, lat })}
         aisVisible={aisVisible}
         boxSelectMode={boxMode}
@@ -121,6 +128,15 @@ export default function Workspace() {
             <input type="checkbox" checked={tracksOn} onChange={(e) => setTracksOn(e.target.checked)} />
             Tracks <span className="text-[10px] text-gray-500">(select one vessel · last 6h)</span>
           </label>
+          <label className="mt-2 flex items-center gap-2 text-gray-300">
+            <input type="checkbox" checked={gapsOn} onChange={(e) => setGapsOn(e.target.checked)} />
+            Dark shipping / AIS gaps <span className="text-[10px] text-amber-400/70">(indicator only)</span>
+          </label>
+          {gapsOn && (
+            <p className="mt-1 rounded bg-amber-500/10 p-1.5 text-[10px] leading-snug text-amber-300/90">
+              AIS Gap / Dark Shipping Indicator — not a confirmed dark-vessel detection. See the AIS Gaps tab for the full caveat.
+            </p>
+          )}
           <label className="mt-2 flex items-center gap-2 text-gray-500">
             <input type="checkbox" disabled /> ADS-B / GNSS interference <span className="text-[10px]">(soon)</span>
           </label>
@@ -236,6 +252,57 @@ export default function Workspace() {
             {regionCount === 0 && <p className="text-gray-500">No regions.</p>}
           </div>
           <p className="mt-2 text-[10px] text-gray-600">ADS-B collection wires up with Slice C; the toggle stores your intent now.</p>
+        </Modal>
+      )}
+
+      {tool === "gaps" && (
+        <Modal title="AIS Gaps / Dark Shipping" onClose={() => setTool(null)} width="w-[30rem]">
+          <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] leading-snug text-amber-200/90">
+            <strong className="text-amber-300">AIS Gap / Dark Shipping Indicator — not a confirmed dark-vessel detection.</strong>{" "}
+            {gaps.data?.disclaimer ??
+              "An AIS gap means no AIS position was received within the window; it may result from terrestrial coverage limits, equipment faults, or feed interruptions — not necessarily intentional AIS-off behavior."}
+          </div>
+
+          <label className="mt-2 flex items-center gap-2 text-gray-300">
+            <input type="checkbox" checked={gapsOn} onChange={(e) => setGapsOn(e.target.checked)} />
+            Show indicators on map
+          </label>
+
+          {!gapsOn ? (
+            <p className="mt-2 text-gray-500">Enable the layer to scan AIS-collecting regions for vessels not seen in &gt;30 min (within 24h).</p>
+          ) : gaps.isLoading ? (
+            <p className="mt-2 text-gray-500">Scanning…</p>
+          ) : (gapList?.length ?? 0) === 0 ? (
+            <p className="mt-2 text-gray-500">No AIS gaps in collecting regions right now.</p>
+          ) : (
+            <>
+              {gaps.data && !gaps.data.streamFresh && (
+                <p className="mt-2 text-[10px] text-amber-400/80">Feed appears stale — all indicators down-rated to low confidence.</p>
+              )}
+              <div className="mt-2 text-gray-400">
+                <span className="font-mono text-amber-400">{gapList?.length}</span> gap{gapList?.length === 1 ? "" : "s"} (≥{gaps.data?.gapMinutes ?? 30} min)
+              </div>
+              <ul className="mt-1 max-h-72 space-y-1 overflow-auto">
+                {gapList?.map((g, i) => (
+                  <li key={(g.mmsi ?? "") + i} className="flex items-center justify-between rounded border border-white/10 px-2 py-1.5 text-[11px]">
+                    <div className="min-w-0">
+                      <div className="truncate text-gray-200">{g.name || g.mmsi || "unknown"}</div>
+                      <div className="text-[10px] text-gray-500">{g.region ?? "—"} · last seen {g.minutesAgo}m ago</div>
+                    </div>
+                    <span
+                      className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] ${
+                        g.confidence === "high" ? "bg-red-500/20 text-red-300"
+                          : g.confidence === "medium" ? "bg-amber-500/20 text-amber-300"
+                          : "bg-yellow-700/20 text-yellow-600"
+                      }`}
+                    >
+                      {g.confidence}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
         </Modal>
       )}
 
