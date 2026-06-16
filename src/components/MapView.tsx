@@ -7,6 +7,7 @@ mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN ?? "";
 const EMPTY: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
 
 export type Selection = { lng: number; lat: number; radiusKm: number } | null;
+export type PickedVessel = { mmsi: string | null; name: string | null };
 
 function toVesselGeoJSON(vessels: VesselPosition[]): GeoJSON.FeatureCollection {
   return {
@@ -21,7 +22,6 @@ function toVesselGeoJSON(vessels: VesselPosition[]): GeoJSON.FeatureCollection {
   };
 }
 
-// Equirectangular-approx circle polygon (good enough at <=50km).
 function circleFeature(lng: number, lat: number, radiusKm: number): GeoJSON.Feature {
   const points = 64;
   const dLat = radiusKm / 110.574;
@@ -38,18 +38,32 @@ export default function MapView({
   vessels,
   selection,
   onMapClick,
+  aisVisible,
+  boxSelectMode,
+  onVesselClick,
+  onBoxSelect,
 }: {
   vessels: VesselPosition[];
   selection: Selection;
   onMapClick: (lng: number, lat: number) => void;
+  aisVisible: boolean;
+  boxSelectMode: boolean;
+  onVesselClick: (v: PickedVessel) => void;
+  onBoxSelect: (vessels: PickedVessel[]) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const fittedRef = useRef(false);
-  const onClickRef = useRef(onMapClick);
-  useEffect(() => {
-    onClickRef.current = onMapClick;
-  }, [onMapClick]);
+
+  // Latest callbacks/flags via refs so the once-initialized handlers stay current.
+  const onMapClickRef = useRef(onMapClick);
+  const onVesselClickRef = useRef(onVesselClick);
+  const onBoxSelectRef = useRef(onBoxSelect);
+  const boxModeRef = useRef(boxSelectMode);
+  useEffect(() => { onMapClickRef.current = onMapClick; }, [onMapClick]);
+  useEffect(() => { onVesselClickRef.current = onVesselClick; }, [onVesselClick]);
+  useEffect(() => { onBoxSelectRef.current = onBoxSelect; }, [onBoxSelect]);
+  useEffect(() => { boxModeRef.current = boxSelectMode; }, [boxSelectMode]);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -60,13 +74,12 @@ export default function MapView({
       zoom: 5,
     });
     map.addControl(new mapboxgl.NavigationControl(), "top-right");
+
     map.on("load", () => {
       map.resize();
-      // Selection circle (under vessels).
       map.addSource("selection", { type: "geojson", data: EMPTY });
       map.addLayer({ id: "selection-fill", type: "fill", source: "selection", paint: { "fill-color": "#f59e0b", "fill-opacity": 0.12 } });
       map.addLayer({ id: "selection-outline", type: "line", source: "selection", paint: { "line-color": "#f59e0b", "line-width": 2 } });
-      // Vessels.
       map.addSource("vessels", { type: "geojson", data: EMPTY });
       map.addLayer({
         id: "vessels-circle",
@@ -75,28 +88,84 @@ export default function MapView({
         paint: { "circle-radius": 5, "circle-color": "#38bdf8", "circle-stroke-color": "#0b0f14", "circle-stroke-width": 1 },
       });
       map.on("click", "vessels-circle", (e) => {
+        if (boxModeRef.current) return;
         const f = e.features?.[0];
         if (!f) return;
-        const p = f.properties as { mmsi?: string; name?: string; dataSource?: string };
-        const coords = (f.geometry as GeoJSON.Point).coordinates as [number, number];
-        new mapboxgl.Popup()
-          .setLngLat(coords)
-          .setHTML(`<div style="color:#111;font:12px sans-serif"><b>${p.name || p.mmsi || "Vessel"}</b><br/>MMSI ${p.mmsi || "—"}${p.dataSource ? `<br/>${p.dataSource}` : ""}</div>`)
-          .addTo(map);
+        const p = f.properties as { mmsi?: string; name?: string };
+        onVesselClickRef.current({ mmsi: p.mmsi ?? null, name: p.name ?? null });
       });
       map.on("mouseenter", "vessels-circle", () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", "vessels-circle", () => (map.getCanvas().style.cursor = ""));
-      // Click empty map = drop a selection center (ignore clicks on a vessel).
       map.on("click", (e) => {
+        if (boxModeRef.current) return;
         const hit = map.queryRenderedFeatures(e.point, { layers: ["vessels-circle"] });
         if (hit.length) return;
-        onClickRef.current(e.lngLat.lng, e.lngLat.lat);
+        onMapClickRef.current(e.lngLat.lng, e.lngLat.lat);
       });
     });
+
+    // Box-select: drag a rectangle while in box mode → vessels inside.
+    const canvas = map.getCanvasContainer();
+    let boxEl: HTMLDivElement | null = null;
+    let startPt: mapboxgl.Point | null = null;
+    const pos = (e: MouseEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      return new mapboxgl.Point(e.clientX - rect.left, e.clientY - rect.top);
+    };
+    const onMove = (e: MouseEvent) => {
+      if (!startPt) return;
+      const cur = pos(e);
+      if (!boxEl) {
+        boxEl = document.createElement("div");
+        boxEl.style.cssText =
+          "position:absolute;background:rgba(56,189,248,0.12);border:1px solid #38bdf8;pointer-events:none;z-index:5;";
+        canvas.appendChild(boxEl);
+      }
+      const minX = Math.min(startPt.x, cur.x);
+      const minY = Math.min(startPt.y, cur.y);
+      boxEl.style.left = `${minX}px`;
+      boxEl.style.top = `${minY}px`;
+      boxEl.style.width = `${Math.abs(cur.x - startPt.x)}px`;
+      boxEl.style.height = `${Math.abs(cur.y - startPt.y)}px`;
+    };
+    const onUp = (e: MouseEvent) => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      const cur = pos(e);
+      if (boxEl) { boxEl.remove(); boxEl = null; }
+      map.dragPan.enable();
+      const start = startPt;
+      startPt = null;
+      if (!start) return;
+      const bbox: [mapboxgl.PointLike, mapboxgl.PointLike] = [start, cur];
+      const feats = map.queryRenderedFeatures(bbox, { layers: ["vessels-circle"] });
+      const seen = new Set<string>();
+      const out: PickedVessel[] = [];
+      feats.forEach((f) => {
+        const p = f.properties as { mmsi?: string; name?: string };
+        const key = String(p.mmsi ?? Math.random());
+        if (!seen.has(key)) {
+          seen.add(key);
+          out.push({ mmsi: p.mmsi ?? null, name: p.name ?? null });
+        }
+      });
+      if (out.length) onBoxSelectRef.current(out);
+    };
+    const onDown = (e: MouseEvent) => {
+      if (!boxModeRef.current || e.button !== 0) return;
+      e.preventDefault();
+      map.dragPan.disable();
+      startPt = pos(e);
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    };
+    canvas.addEventListener("mousedown", onDown);
+
     const resizeTimer = setTimeout(() => map.resize(), 300);
     mapRef.current = map;
     return () => {
       clearTimeout(resizeTimer);
+      canvas.removeEventListener("mousedown", onDown);
       map.remove();
       mapRef.current = null;
     };
@@ -140,6 +209,26 @@ export default function MapView({
     if (map.getSource("selection")) apply();
     else map.once("load", apply);
   }, [selection]);
+
+  // AIS layer visibility.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      if (map.getLayer("vessels-circle")) {
+        map.setLayoutProperty("vessels-circle", "visibility", aisVisible ? "visible" : "none");
+      }
+    };
+    if (map.isStyleLoaded()) apply();
+    else map.once("load", apply);
+  }, [aisVisible]);
+
+  // Box-select mode cursor.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    map.getCanvas().style.cursor = boxSelectMode ? "crosshair" : "";
+  }, [boxSelectMode]);
 
   return <div ref={containerRef} className="absolute inset-0" style={{ minHeight: "100%" }} />;
 }
