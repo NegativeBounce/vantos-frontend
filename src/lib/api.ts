@@ -32,3 +32,22 @@ export type VesselPosition = {
 };
 export const getPositions = () =>
   apiGet<{ status: string; count: number; vessels: VesselPosition[] }>("/api/positions");
+
+export type AreaSearchResult = {
+  status: string;
+  region?: string;
+  center?: { latitude: number; longitude: number };
+  radiusKm?: number;
+  fetched?: number;
+  stored?: number;
+  error?: string;
+};
+export async function searchArea(latitude: number, longitude: number, radiusKm: number): Promise<AreaSearchResult> {
+  const res = await fetch(`${BASE}/api/area/search`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ latitude, longitude, radiusKm }),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return (await res.json()) as AreaSearchResult;
+}
