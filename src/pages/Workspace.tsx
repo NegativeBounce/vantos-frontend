@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import MapView from "../components/MapView";
-import { getHealth, getRegions } from "../lib/api";
+import { getHealth, getRegions, getPositions } from "../lib/api";
 import { useAuth } from "../lib/auth";
 
 const LAYERS = ["AIS (AISStream + Data Docked)", "ADS-B / GNSS interference", "Imagery"];
@@ -9,10 +9,11 @@ export default function Workspace() {
   const { logout } = useAuth();
   const health = useQuery({ queryKey: ["health"], queryFn: getHealth });
   const regions = useQuery({ queryKey: ["regions"], queryFn: getRegions });
+  const positions = useQuery({ queryKey: ["positions"], queryFn: getPositions });
 
   return (
     <div className="relative h-screen w-screen overflow-hidden">
-      <MapView />
+      <MapView vessels={positions.data?.vessels ?? []} />
 
       {/* Top bar */}
       <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-between bg-black/40 px-4 py-2 backdrop-blur">
@@ -38,7 +39,10 @@ export default function Workspace() {
             <input type="checkbox" disabled /> {l}
           </label>
         ))}
-        <p className="pt-1 text-[10px] text-gray-500">Layer data wires in the next slices.</p>
+        <div className="mt-1 border-t border-white/10 pt-2 text-gray-300">
+          Vessels plotted: <span className="font-mono text-sky-400">{positions.data?.count ?? 0}</span>
+        </div>
+        <p className="pt-1 text-[10px] text-gray-500">Toggles + live AIS/ADS-B wire in upcoming slices.</p>
       </div>
 
       {/* Right context panel */}

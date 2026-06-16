@@ -19,3 +19,16 @@ export type Region = {
   boundingBox: { minLat: number; minLon: number; maxLat: number; maxLon: number } | null;
 };
 export const getRegions = () => apiGet<{ status: string; regions: Region[] }>("/api/regions");
+
+export type VesselPosition = {
+  mmsi: string | null;
+  name: string | null;
+  type: string | null;
+  latitude: number;
+  longitude: number;
+  speed: number | null;
+  navStatus: string | null;
+  dataSource: string | null;
+};
+export const getPositions = () =>
+  apiGet<{ status: string; count: number; vessels: VesselPosition[] }>("/api/positions");
