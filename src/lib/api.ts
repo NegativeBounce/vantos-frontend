@@ -79,9 +79,25 @@ export type Region = {
   name: string;
   type: string;
   riskLevel: string | null;
+  collectAis: boolean;
+  collectAdsb: boolean;
   boundingBox: { minLat: number; minLon: number; maxLat: number; maxLon: number } | null;
 };
 export const getRegions = () => apiGet<{ status: string; regions: Region[] }>("/api/regions");
+
+export async function setRegionCollection(
+  id: string,
+  input: { collectAis?: boolean; collectAdsb?: boolean }
+): Promise<{ status: string; region?: Region; error?: string }> {
+  const res = await authedFetch(`/api/regions/${id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const data = (await res.json().catch(() => ({}))) as { status: string; region?: Region; error?: string };
+  if (!res.ok) throw new Error(data?.error || `${res.status} ${res.statusText}`);
+  return data;
+}
 
 export type VesselPosition = {
   mmsi: string | null;

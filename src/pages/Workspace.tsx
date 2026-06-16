@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import MapView, { type PickedVessel } from "../components/MapView";
 import Modal from "../components/Modal";
-import { getRegions, getPositions, searchArea, type AreaSearchResult } from "../lib/api";
+import { getRegions, getPositions, searchArea, setRegionCollection, type AreaSearchResult } from "../lib/api";
 
 const REPORT_TYPES = ["Insurance Risk Advisory", "Weekly Maritime Intelligence", "Vessel Captain Advisory"];
 type Tool = "layers" | "vessels" | "area" | "regions";
@@ -172,16 +172,39 @@ export default function Workspace() {
       )}
 
       {tool === "regions" && (
-        <Modal title="Regions" onClose={() => setTool(null)}>
-          <ul className="max-h-64 space-y-1 overflow-auto text-gray-400">
+        <Modal title="Regions — data collection" onClose={() => setTool(null)} width="w-[28rem]">
+          <p className="mb-2 text-[11px] text-gray-500">Toggle which sources collect data per region. AIS streams continuously while on; nothing collects until enabled.</p>
+          <div className="max-h-72 space-y-1.5 overflow-auto">
             {regions.data?.regions?.map((r) => (
-              <li key={r.id} className="flex items-center justify-between">
-                <span>{r.name}</span>
-                <span className="text-[10px] text-gray-500">{r.type}</span>
-              </li>
+              <div key={r.id} className="flex items-center justify-between rounded border border-white/10 px-2 py-1.5">
+                <div className="min-w-0">
+                  <div className="truncate text-gray-200">{r.name}</div>
+                  <div className="text-[10px] text-gray-500">{r.type}{r.boundingBox ? "" : " · no geofence"}</div>
+                </div>
+                <div className="flex shrink-0 gap-3 text-[11px]">
+                  <label className={`flex items-center gap-1 ${r.boundingBox ? "text-gray-300" : "text-gray-600"}`}>
+                    <input
+                      type="checkbox"
+                      checked={r.collectAis}
+                      disabled={!r.boundingBox}
+                      onChange={async (e) => { await setRegionCollection(r.id, { collectAis: e.target.checked }); qc.invalidateQueries({ queryKey: ["regions"] }); }}
+                    />
+                    AIS
+                  </label>
+                  <label className="flex items-center gap-1 text-gray-300">
+                    <input
+                      type="checkbox"
+                      checked={r.collectAdsb}
+                      onChange={async (e) => { await setRegionCollection(r.id, { collectAdsb: e.target.checked }); qc.invalidateQueries({ queryKey: ["regions"] }); }}
+                    />
+                    ADS-B
+                  </label>
+                </div>
+              </div>
             ))}
-            {regionCount === 0 && <li className="text-gray-500">No regions.</li>}
-          </ul>
+            {regionCount === 0 && <p className="text-gray-500">No regions.</p>}
+          </div>
+          <p className="mt-2 text-[10px] text-gray-600">ADS-B collection wires up with Slice C; the toggle stores your intent now.</p>
         </Modal>
       )}
 
