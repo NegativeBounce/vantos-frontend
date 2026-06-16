@@ -9,6 +9,10 @@ const EMPTY: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: 
 export type Selection = { lng: number; lat: number; radiusKm: number } | null;
 export type PickedVessel = { mmsi: string | null; name: string | null };
 
+// Persist the map view across tab switches (module-level survives unmount within the session).
+type View = { center: [number, number]; zoom: number; bearing: number; pitch: number };
+let savedView: View | null = null;
+
 function toVesselGeoJSON(vessels: VesselPosition[]): GeoJSON.FeatureCollection {
   return {
     type: "FeatureCollection",
@@ -70,10 +74,17 @@ export default function MapView({
     const map = new mapboxgl.Map({
       container: containerRef.current,
       style: "mapbox://styles/mapbox/dark-v11",
-      center: [43.4, 12.6],
-      zoom: 5,
+      center: savedView?.center ?? [43.4, 12.6],
+      zoom: savedView?.zoom ?? 5,
+      bearing: savedView?.bearing ?? 0,
+      pitch: savedView?.pitch ?? 0,
     });
+    if (savedView) fittedRef.current = true; // don't auto-fit if we're restoring a view
     map.addControl(new mapboxgl.NavigationControl(), "top-right");
+    map.on("moveend", () => {
+      const c = map.getCenter();
+      savedView = { center: [c.lng, c.lat], zoom: map.getZoom(), bearing: map.getBearing(), pitch: map.getPitch() };
+    });
 
     map.on("load", () => {
       map.resize();

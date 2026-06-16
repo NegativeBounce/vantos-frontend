@@ -1,13 +1,76 @@
-// Topology A: the frontend and backend share one App Platform app, so we call the
-// backend at /api (same origin). VITE_API_BASE_URL can override for separate-app setups.
+// Topology A: frontend + backend share one app; call the backend at /api (same origin).
 const BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+const TOKEN_KEY = "vantos.token";
+
+export function getToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+export function setToken(t: string): void {
+  localStorage.setItem(TOKEN_KEY, t);
+}
+export function clearToken(): void {
+  localStorage.removeItem(TOKEN_KEY);
+}
+
+let onUnauthorized: (() => void) | null = null;
+export function setUnauthorizedHandler(fn: (() => void) | null): void {
+  onUnauthorized = fn;
+}
+
+async function authedFetch(path: string, init?: RequestInit): Promise<Response> {
+  const headers = new Headers(init?.headers);
+  headers.set("accept", "application/json");
+  const token = getToken();
+  if (token) headers.set("authorization", `Bearer ${token}`);
+  const res = await fetch(`${BASE}${path}`, { ...init, headers });
+  if (res.status === 401) {
+    clearToken();
+    if (onUnauthorized) onUnauthorized();
+    throw new Error("unauthorized");
+  }
+  return res;
+}
 
 async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { headers: { accept: "application/json" } });
+  const res = await authedFetch(path);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return (await res.json()) as T;
 }
 
+async function apiPost<T>(path: string, body: unknown): Promise<T> {
+  const res = await authedFetch(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = (await res.json().catch(() => ({}))) as T & { error?: string };
+  if (!res.ok) throw new Error(data?.error || `${res.status} ${res.statusText}`);
+  return data as T;
+}
+
+// ---- Auth ----
+export type AuthUser = { id: string; email: string; name?: string | null; role: string };
+
+export async function login(email: string, password: string): Promise<AuthUser> {
+  const res = await fetch(`${BASE}/api/auth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  const data = (await res.json().catch(() => ({}))) as { token?: string; user?: AuthUser; error?: string };
+  if (!res.ok || !data.token) throw new Error(data?.error || `login failed (${res.status})`);
+  setToken(data.token);
+  return data.user as AuthUser;
+}
+
+export const getMe = () => apiGet<{ status: string; user: AuthUser }>("/api/auth/me");
+
+export type AppUser = { id: string; email: string; name: string | null; role: string; status: string; created_at: string };
+export const listUsers = () => apiGet<{ status: string; users: AppUser[] }>("/api/users");
+export const createUser = (input: { email: string; name?: string; role: string; password?: string; invite?: boolean }) =>
+  apiPost<{ status: string; mode: string; user: AppUser }>("/api/users", input);
+
+// ---- Health / data ----
 export type Health = { status: string; env: string; time: string };
 export const getHealth = () => apiGet<Health>("/healthz");
 
@@ -43,8 +106,7 @@ export type DataSource = {
   keyHint: string | null;
   updatedAt: string;
 };
-export const getDataSources = () =>
-  apiGet<{ status: string; dataSources: DataSource[] }>("/api/data-sources");
+export const getDataSources = () => apiGet<{ status: string; dataSources: DataSource[] }>("/api/data-sources");
 
 export type AreaSearchResult = {
   status: string;
@@ -55,12 +117,5 @@ export type AreaSearchResult = {
   stored?: number;
   error?: string;
 };
-export async function searchArea(latitude: number, longitude: number, radiusKm: number): Promise<AreaSearchResult> {
-  const res = await fetch(`${BASE}/api/area/search`, {
-    method: "POST",
-    headers: { "content-type": "application/json", accept: "application/json" },
-    body: JSON.stringify({ latitude, longitude, radiusKm }),
-  });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return (await res.json()) as AreaSearchResult;
-}
+export const searchArea = (latitude: number, longitude: number, radiusKm: number) =>
+  apiPost<AreaSearchResult>("/api/area/search", { latitude, longitude, radiusKm });
