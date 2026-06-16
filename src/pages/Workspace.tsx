@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import MapView, { type PickedVessel } from "../components/MapView";
 import Modal from "../components/Modal";
-import { getRegions, getPositions, searchArea, setRegionCollection, type AreaSearchResult } from "../lib/api";
+import { getRegions, getPositions, getVesselTrack, searchArea, setRegionCollection, type AreaSearchResult } from "../lib/api";
 
 const REPORT_TYPES = ["Insurance Risk Advisory", "Weekly Maritime Intelligence", "Vessel Captain Advisory"];
 type Tool = "layers" | "vessels" | "area" | "regions";
@@ -16,9 +16,25 @@ export default function Workspace() {
 
   // AIS display controls
   const [aisVisible, setAisVisible] = useState(true);
+  const [tracksOn, setTracksOn] = useState(false);
   const [boxMode, setBoxMode] = useState(false);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<PickedVessel[]>([]);
+
+  // Track for the single selected vessel (only when the Tracks layer is on).
+  const trackMmsi = selected.length === 1 ? selected[0].mmsi : null;
+  const track = useQuery({
+    queryKey: ["track", trackMmsi],
+    queryFn: () => getVesselTrack(trackMmsi as string),
+    enabled: tracksOn && !!trackMmsi,
+    refetchInterval: 30000,
+  });
+  const trackCoords = useMemo<[number, number][] | null>(() => {
+    if (!tracksOn || !track.data?.points) return null;
+    return track.data.points
+      .filter((p) => Number.isFinite(p.longitude) && Number.isFinite(p.latitude))
+      .map((p) => [p.longitude, p.latitude] as [number, number]);
+  }, [tracksOn, track.data]);
 
   // Area search
   const [center, setCenter] = useState<{ lng: number; lat: number } | null>(null);
@@ -73,6 +89,7 @@ export default function Workspace() {
       <MapView
         vessels={displayed}
         selection={center ? { lng: center.lng, lat: center.lat, radiusKm } : null}
+        track={trackCoords}
         onMapClick={(lng, lat) => setCenter({ lng, lat })}
         aisVisible={aisVisible}
         boxSelectMode={boxMode}
@@ -99,6 +116,10 @@ export default function Workspace() {
           <label className="flex items-center gap-2 text-gray-300">
             <input type="checkbox" checked={aisVisible} onChange={(e) => setAisVisible(e.target.checked)} />
             AIS (AISStream + Data Docked)
+          </label>
+          <label className="mt-2 flex items-center gap-2 text-gray-300">
+            <input type="checkbox" checked={tracksOn} onChange={(e) => setTracksOn(e.target.checked)} />
+            Tracks <span className="text-[10px] text-gray-500">(select one vessel · last 6h)</span>
           </label>
           <label className="mt-2 flex items-center gap-2 text-gray-500">
             <input type="checkbox" disabled /> ADS-B / GNSS interference <span className="text-[10px]">(soon)</span>
@@ -129,6 +150,16 @@ export default function Workspace() {
 
           <div className="mt-3 border-t border-white/10 pt-2">
             <div className="text-gray-300">Selected: <span className="font-mono text-sky-400">{selected.length}</span></div>
+            {tracksOn && trackMmsi && (
+              <div className="mt-1 text-[11px] text-cyan-300/80">
+                {track.isFetching && !track.data ? "Loading track…"
+                  : (track.data?.count ?? 0) >= 2 ? `Track: ${track.data?.count} points over ${track.data?.hours}h`
+                  : "Track: not enough history yet for this vessel."}
+              </div>
+            )}
+            {tracksOn && selected.length > 1 && (
+              <div className="mt-1 text-[11px] text-gray-500">Select a single vessel to see its track.</div>
+            )}
             {selected.length > 0 && (
               <>
                 <ul className="mt-1 max-h-28 space-y-0.5 overflow-auto text-gray-400">

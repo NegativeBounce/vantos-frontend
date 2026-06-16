@@ -40,9 +40,21 @@ function circleFeature(lng: number, lat: number, radiusKm: number): GeoJSON.Feat
   return { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [ring] } };
 }
 
+function trackData(track: [number, number][] | null): GeoJSON.FeatureCollection {
+  if (!track || track.length < 2) return EMPTY;
+  const features: GeoJSON.Feature[] = [
+    { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: track } },
+    // Endpoints: start (older, hollow) and current (latest, filled).
+    { type: "Feature", properties: { kind: "start" }, geometry: { type: "Point", coordinates: track[0] } },
+    { type: "Feature", properties: { kind: "end" }, geometry: { type: "Point", coordinates: track[track.length - 1] } },
+  ];
+  return { type: "FeatureCollection", features };
+}
+
 export default function MapView({
   vessels,
   selection,
+  track,
   onMapClick,
   aisVisible,
   boxSelectMode,
@@ -51,6 +63,7 @@ export default function MapView({
 }: {
   vessels: VesselPosition[];
   selection: Selection;
+  track: [number, number][] | null;
   onMapClick: (lng: number, lat: number) => void;
   aisVisible: boolean;
   boxSelectMode: boolean;
@@ -91,6 +104,39 @@ export default function MapView({
       map.addSource("selection", { type: "geojson", data: EMPTY });
       map.addLayer({ id: "selection-fill", type: "fill", source: "selection", paint: { "fill-color": "#f59e0b", "fill-opacity": 0.12 } });
       map.addLayer({ id: "selection-outline", type: "line", source: "selection", paint: { "line-color": "#f59e0b", "line-width": 2 } });
+
+      // Track (selected vessel movement history) — sits beneath vessel markers.
+      map.addSource("track", { type: "geojson", data: EMPTY });
+      map.addLayer({
+        id: "track-line-glow",
+        type: "line",
+        source: "track",
+        filter: ["==", ["geometry-type"], "LineString"],
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": "#22d3ee", "line-width": 7, "line-opacity": 0.18, "line-blur": 3 },
+      });
+      map.addLayer({
+        id: "track-line",
+        type: "line",
+        source: "track",
+        filter: ["==", ["geometry-type"], "LineString"],
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": "#22d3ee", "line-width": 2.5, "line-opacity": 0.9 },
+      });
+      map.addLayer({
+        id: "track-start",
+        type: "circle",
+        source: "track",
+        filter: ["==", ["get", "kind"], "start"],
+        paint: { "circle-radius": 5, "circle-color": "#0b0f14", "circle-stroke-color": "#22d3ee", "circle-stroke-width": 2 },
+      });
+      map.addLayer({
+        id: "track-end",
+        type: "circle",
+        source: "track",
+        filter: ["==", ["get", "kind"], "end"],
+        paint: { "circle-radius": 6, "circle-color": "#22d3ee", "circle-stroke-color": "#0b0f14", "circle-stroke-width": 2 },
+      });
 
       // Clustered vessel source.
       map.addSource("vessels", { type: "geojson", data: EMPTY, cluster: true, clusterRadius: 50, clusterMaxZoom: 13 });
@@ -241,6 +287,17 @@ export default function MapView({
     if (map.getSource("selection")) apply();
     else map.once("load", apply);
   }, [selection]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      const src = map.getSource("track") as mapboxgl.GeoJSONSource | undefined;
+      if (src) src.setData(trackData(track));
+    };
+    if (map.getSource("track")) apply();
+    else map.once("load", apply);
+  }, [track]);
 
   useEffect(() => {
     const map = mapRef.current;

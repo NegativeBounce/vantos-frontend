@@ -112,6 +112,19 @@ export type VesselPosition = {
 export const getPositions = () =>
   apiGet<{ status: string; count: number; vessels: VesselPosition[] }>("/api/positions?limit=5000");
 
+export type TrackPoint = {
+  latitude: number;
+  longitude: number;
+  speed: number | null;
+  heading: number | null;
+  positionReceived: string | null;
+  ingestedAt: string;
+};
+export const getVesselTrack = (mmsi: string, hours = 6) =>
+  apiGet<{ status: string; mmsi: string; hours: number; count: number; points: TrackPoint[] }>(
+    `/api/vessels/${encodeURIComponent(mmsi)}/track?hours=${hours}`
+  );
+
 export type DataSource = {
   id: string;
   provider: string;
