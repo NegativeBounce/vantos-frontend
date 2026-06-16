@@ -236,7 +236,7 @@ export default function Workspace() {
                   <div className="text-[10px] text-gray-500">{r.type}{r.boundingBox ? "" : " · no geofence"}</div>
                 </div>
                 <div className="flex shrink-0 gap-3 text-[11px]">
-                  <label className={`flex items-center gap-1 ${r.boundingBox ? "text-gray-300" : "text-gray-600"}`}>
+                  <label className={`flex items-center gap-1 ${r.boundingBox ? "text-gray-300" : "text-gray-600"}`} title="AISStream terrestrial collection (free, continuous)">
                     <input
                       type="checkbox"
                       checked={r.collectAis}
@@ -244,6 +244,15 @@ export default function Workspace() {
                       onChange={async (e) => { await setRegionCollection(r.id, { collectAis: e.target.checked }); qc.invalidateQueries({ queryKey: ["regions"] }); }}
                     />
                     AIS
+                  </label>
+                  <label className={`flex items-center gap-1 ${r.boundingBox ? "text-gray-300" : "text-gray-600"}`} title="Scheduled Data Docked satellite pull (spends credits; for sparse regions)">
+                    <input
+                      type="checkbox"
+                      checked={r.collectAisSatellite}
+                      disabled={!r.boundingBox}
+                      onChange={async (e) => { await setRegionCollection(r.id, { collectAisSatellite: e.target.checked }); qc.invalidateQueries({ queryKey: ["regions"] }); }}
+                    />
+                    Sat
                   </label>
                   <label className="flex items-center gap-1 text-gray-300">
                     <input
@@ -258,7 +267,9 @@ export default function Workspace() {
             ))}
             {regionCount === 0 && <p className="text-gray-500">No regions.</p>}
           </div>
-          <p className="mt-2 text-[10px] text-gray-600">ADS-B collection wires up with Slice C; the toggle stores your intent now.</p>
+          <p className="mt-2 text-[10px] text-gray-600">
+            <strong className="text-gray-500">AIS</strong> = AISStream terrestrial (free, continuous). <strong className="text-gray-500">Sat</strong> = scheduled Data Docked satellite pull every 30&nbsp;min (spends credits — use for sparse regions like Hormuz). <strong className="text-gray-500">ADS-B</strong> wires up with Slice C.
+          </p>
         </Modal>
       )}
 

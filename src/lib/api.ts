@@ -81,13 +81,14 @@ export type Region = {
   riskLevel: string | null;
   collectAis: boolean;
   collectAdsb: boolean;
+  collectAisSatellite: boolean;
   boundingBox: { minLat: number; minLon: number; maxLat: number; maxLon: number } | null;
 };
 export const getRegions = () => apiGet<{ status: string; regions: Region[] }>("/api/regions");
 
 export async function setRegionCollection(
   id: string,
-  input: { collectAis?: boolean; collectAdsb?: boolean }
+  input: { collectAis?: boolean; collectAdsb?: boolean; collectAisSatellite?: boolean }
 ): Promise<{ status: string; region?: Region; error?: string }> {
   const res = await authedFetch(`/api/regions/${id}`, {
     method: "PATCH",
