@@ -11,7 +11,7 @@ export default function Workspace() {
   const regions = useQuery({ queryKey: ["regions"], queryFn: getRegions });
 
   return (
-    <div className="relative h-full w-full">
+    <div className="relative h-screen w-screen overflow-hidden">
       <MapView />
 
       {/* Top bar */}
