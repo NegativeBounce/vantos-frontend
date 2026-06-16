@@ -1,0 +1,21 @@
+// Topology A: the frontend and backend share one App Platform app, so we call the
+// backend at /api (same origin). VITE_API_BASE_URL can override for separate-app setups.
+const BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+
+async function apiGet<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, { headers: { accept: "application/json" } });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return (await res.json()) as T;
+}
+
+export type Health = { status: string; env: string; time: string };
+export const getHealth = () => apiGet<Health>("/healthz");
+
+export type Region = {
+  id: string;
+  name: string;
+  type: string;
+  riskLevel: string | null;
+  boundingBox: { minLat: number; minLon: number; maxLat: number; maxLon: number } | null;
+};
+export const getRegions = () => apiGet<{ status: string; regions: Region[] }>("/api/regions");
