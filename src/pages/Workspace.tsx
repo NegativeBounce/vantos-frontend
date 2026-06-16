@@ -10,7 +10,7 @@ type Tool = "layers" | "vessels" | "area" | "regions";
 export default function Workspace() {
   const qc = useQueryClient();
   const regions = useQuery({ queryKey: ["regions"], queryFn: getRegions });
-  const positions = useQuery({ queryKey: ["positions"], queryFn: getPositions });
+  const positions = useQuery({ queryKey: ["positions"], queryFn: getPositions, refetchInterval: 20000 });
 
   const [tool, setTool] = useState<Tool | null>(null);
 
