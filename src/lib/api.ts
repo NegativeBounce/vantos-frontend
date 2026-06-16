@@ -110,7 +110,7 @@ export type VesselPosition = {
   dataSource: string | null;
 };
 export const getPositions = () =>
-  apiGet<{ status: string; count: number; vessels: VesselPosition[] }>("/api/positions");
+  apiGet<{ status: string; count: number; vessels: VesselPosition[] }>("/api/positions?limit=5000");
 
 export type DataSource = {
   id: string;

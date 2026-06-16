@@ -13,6 +13,8 @@ export type PickedVessel = { mmsi: string | null; name: string | null };
 type View = { center: [number, number]; zoom: number; bearing: number; pitch: number };
 let savedView: View | null = null;
 
+const VESSEL_LAYERS = ["clusters", "cluster-count", "vessels-circle"];
+
 function toVesselGeoJSON(vessels: VesselPosition[]): GeoJSON.FeatureCollection {
   return {
     type: "FeatureCollection",
@@ -58,8 +60,6 @@ export default function MapView({
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const fittedRef = useRef(false);
-
-  // Latest callbacks/flags via refs so the once-initialized handlers stay current.
   const onMapClickRef = useRef(onMapClick);
   const onVesselClickRef = useRef(onVesselClick);
   const onBoxSelectRef = useRef(onBoxSelect);
@@ -79,7 +79,7 @@ export default function MapView({
       bearing: savedView?.bearing ?? 0,
       pitch: savedView?.pitch ?? 0,
     });
-    if (savedView) fittedRef.current = true; // don't auto-fit if we're restoring a view
+    if (savedView) fittedRef.current = true;
     map.addControl(new mapboxgl.NavigationControl(), "top-right");
     map.on("moveend", () => {
       const c = map.getCenter();
@@ -91,13 +91,47 @@ export default function MapView({
       map.addSource("selection", { type: "geojson", data: EMPTY });
       map.addLayer({ id: "selection-fill", type: "fill", source: "selection", paint: { "fill-color": "#f59e0b", "fill-opacity": 0.12 } });
       map.addLayer({ id: "selection-outline", type: "line", source: "selection", paint: { "line-color": "#f59e0b", "line-width": 2 } });
-      map.addSource("vessels", { type: "geojson", data: EMPTY });
+
+      // Clustered vessel source.
+      map.addSource("vessels", { type: "geojson", data: EMPTY, cluster: true, clusterRadius: 50, clusterMaxZoom: 13 });
+      map.addLayer({
+        id: "clusters",
+        type: "circle",
+        source: "vessels",
+        filter: ["has", "point_count"],
+        paint: {
+          "circle-color": ["step", ["get", "point_count"], "#0ea5e9", 50, "#38bdf8", 250, "#7dd3fc"],
+          "circle-radius": ["step", ["get", "point_count"], 12, 50, 16, 250, 22],
+          "circle-opacity": 0.85,
+        },
+      });
+      map.addLayer({
+        id: "cluster-count",
+        type: "symbol",
+        source: "vessels",
+        filter: ["has", "point_count"],
+        layout: { "text-field": ["get", "point_count_abbreviated"], "text-size": 11 },
+        paint: { "text-color": "#06283d" },
+      });
       map.addLayer({
         id: "vessels-circle",
         type: "circle",
         source: "vessels",
+        filter: ["!", ["has", "point_count"]],
         paint: { "circle-radius": 5, "circle-color": "#38bdf8", "circle-stroke-color": "#0b0f14", "circle-stroke-width": 1 },
       });
+
+      // Click a cluster → zoom in.
+      map.on("click", "clusters", (e) => {
+        const f = map.queryRenderedFeatures(e.point, { layers: ["clusters"] })[0];
+        if (!f) return;
+        const clusterId = (f.properties as { cluster_id: number }).cluster_id;
+        const src = map.getSource("vessels") as mapboxgl.GeoJSONSource;
+        src.getClusterExpansionZoom(clusterId).then((zoom) => {
+          map.easeTo({ center: (f.geometry as GeoJSON.Point).coordinates as [number, number], zoom });
+        }).catch(() => undefined);
+      });
+      // Click a single vessel → select.
       map.on("click", "vessels-circle", (e) => {
         if (boxModeRef.current) return;
         const f = e.features?.[0];
@@ -105,17 +139,20 @@ export default function MapView({
         const p = f.properties as { mmsi?: string; name?: string };
         onVesselClickRef.current({ mmsi: p.mmsi ?? null, name: p.name ?? null });
       });
-      map.on("mouseenter", "vessels-circle", () => (map.getCanvas().style.cursor = "pointer"));
-      map.on("mouseleave", "vessels-circle", () => (map.getCanvas().style.cursor = ""));
+      for (const lyr of ["clusters", "vessels-circle"]) {
+        map.on("mouseenter", lyr, () => (map.getCanvas().style.cursor = "pointer"));
+        map.on("mouseleave", lyr, () => (map.getCanvas().style.cursor = boxModeRef.current ? "crosshair" : ""));
+      }
+      // Click empty map → drop a search center.
       map.on("click", (e) => {
         if (boxModeRef.current) return;
-        const hit = map.queryRenderedFeatures(e.point, { layers: ["vessels-circle"] });
+        const hit = map.queryRenderedFeatures(e.point, { layers: ["clusters", "vessels-circle"] });
         if (hit.length) return;
         onMapClickRef.current(e.lngLat.lng, e.lngLat.lat);
       });
     });
 
-    // Box-select: drag a rectangle while in box mode → vessels inside.
+    // Box-select (drag a rectangle in box mode) → unclustered vessels inside.
     const canvas = map.getCanvasContainer();
     let boxEl: HTMLDivElement | null = null;
     let startPt: mapboxgl.Point | null = null;
@@ -128,14 +165,11 @@ export default function MapView({
       const cur = pos(e);
       if (!boxEl) {
         boxEl = document.createElement("div");
-        boxEl.style.cssText =
-          "position:absolute;background:rgba(56,189,248,0.12);border:1px solid #38bdf8;pointer-events:none;z-index:5;";
+        boxEl.style.cssText = "position:absolute;background:rgba(56,189,248,0.12);border:1px solid #38bdf8;pointer-events:none;z-index:5;";
         canvas.appendChild(boxEl);
       }
-      const minX = Math.min(startPt.x, cur.x);
-      const minY = Math.min(startPt.y, cur.y);
-      boxEl.style.left = `${minX}px`;
-      boxEl.style.top = `${minY}px`;
+      boxEl.style.left = `${Math.min(startPt.x, cur.x)}px`;
+      boxEl.style.top = `${Math.min(startPt.y, cur.y)}px`;
       boxEl.style.width = `${Math.abs(cur.x - startPt.x)}px`;
       boxEl.style.height = `${Math.abs(cur.y - startPt.y)}px`;
     };
@@ -148,17 +182,13 @@ export default function MapView({
       const start = startPt;
       startPt = null;
       if (!start) return;
-      const bbox: [mapboxgl.PointLike, mapboxgl.PointLike] = [start, cur];
-      const feats = map.queryRenderedFeatures(bbox, { layers: ["vessels-circle"] });
+      const feats = map.queryRenderedFeatures([start, cur], { layers: ["vessels-circle"] });
       const seen = new Set<string>();
       const out: PickedVessel[] = [];
       feats.forEach((f) => {
         const p = f.properties as { mmsi?: string; name?: string };
         const key = String(p.mmsi ?? Math.random());
-        if (!seen.has(key)) {
-          seen.add(key);
-          out.push({ mmsi: p.mmsi ?? null, name: p.name ?? null });
-        }
+        if (!seen.has(key)) { seen.add(key); out.push({ mmsi: p.mmsi ?? null, name: p.name ?? null }); }
       });
       if (out.length) onBoxSelectRef.current(out);
     };
@@ -182,7 +212,6 @@ export default function MapView({
     };
   }, []);
 
-  // Vessel data + one-time fit.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -194,47 +223,37 @@ export default function MapView({
         vessels.forEach((v) => {
           if (Number.isFinite(v.latitude) && Number.isFinite(v.longitude)) bounds.extend([v.longitude, v.latitude]);
         });
-        if (!bounds.isEmpty()) {
-          map.fitBounds(bounds, { padding: 80, maxZoom: 8, duration: 0 });
-          fittedRef.current = true;
-        }
+        if (!bounds.isEmpty()) { map.fitBounds(bounds, { padding: 80, maxZoom: 8, duration: 0 }); fittedRef.current = true; }
       }
     };
     if (map.getSource("vessels")) apply();
     else map.once("load", apply);
   }, [vessels]);
 
-  // Selection circle.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     const apply = () => {
       const src = map.getSource("selection") as mapboxgl.GeoJSONSource | undefined;
       if (!src) return;
-      src.setData(
-        selection
-          ? { type: "FeatureCollection", features: [circleFeature(selection.lng, selection.lat, selection.radiusKm)] }
-          : EMPTY
-      );
+      src.setData(selection ? { type: "FeatureCollection", features: [circleFeature(selection.lng, selection.lat, selection.radiusKm)] } : EMPTY);
     };
     if (map.getSource("selection")) apply();
     else map.once("load", apply);
   }, [selection]);
 
-  // AIS layer visibility.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     const apply = () => {
-      if (map.getLayer("vessels-circle")) {
-        map.setLayoutProperty("vessels-circle", "visibility", aisVisible ? "visible" : "none");
+      for (const lyr of VESSEL_LAYERS) {
+        if (map.getLayer(lyr)) map.setLayoutProperty(lyr, "visibility", aisVisible ? "visible" : "none");
       }
     };
     if (map.isStyleLoaded()) apply();
     else map.once("load", apply);
   }, [aisVisible]);
 
-  // Box-select mode cursor.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
