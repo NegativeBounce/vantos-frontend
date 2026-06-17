@@ -226,6 +226,39 @@ export type CreditSpendRow = { endpoint: string; runs: number; credits_spent: nu
 export const getIngestionRuns = (limit = 25) =>
   apiGet<{ status: string; runs: IngestionRun[]; summary: CreditSpendRow[] }>(`/api/datadocked/runs?limit=${limit}`);
 
+// ---- Vessel anomalies / pattern analysis ----
+export type AnomalySeverity = "low" | "medium" | "high";
+export type Anomaly = {
+  id: string;
+  type: string;
+  severity: AnomalySeverity;
+  mmsi: string | null;
+  imo: string | null;
+  name: string | null;
+  vesselType: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  occurredAt: string | null;
+  title: string;
+  description: string;
+  details: Record<string, unknown> | null;
+  detectedAt: string;
+};
+export type AnomalyResult = {
+  status: string;
+  disclaimer: string;
+  counts: { severity: string; n: number }[];
+  count: number;
+  anomalies: Anomaly[];
+};
+export const getAnomalies = (opts?: { type?: string; severity?: string; limit?: number }) => {
+  const q = new URLSearchParams();
+  if (opts?.type) q.set("type", opts.type);
+  if (opts?.severity) q.set("severity", opts.severity);
+  q.set("limit", String(opts?.limit ?? 200));
+  return apiGet<AnomalyResult>(`/api/anomalies?${q.toString()}`);
+};
+
 // ---- Per-vessel enrichment ----
 export type VesselEnrichment = {
   status: string;

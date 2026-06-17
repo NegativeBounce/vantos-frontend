@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import MapView, { type PickedVessel } from "../components/MapView";
 import Modal from "../components/Modal";
 import { usePersistentState } from "../lib/persist";
-import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, enrichVessel, searchArea, setRegionCollection, pullRegion, type AreaSearchResult } from "../lib/api";
+import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, enrichVessel, searchArea, setRegionCollection, pullRegion, type AreaSearchResult } from "../lib/api";
 
 const REPORT_TYPES = ["Insurance Risk Advisory", "Weekly Maritime Intelligence", "Vessel Captain Advisory"];
 const CADENCE_OPTIONS = [
@@ -12,7 +12,18 @@ const CADENCE_OPTIONS = [
   { v: 180, l: "3h" },
   { v: 60, l: "1h" },
 ];
-type Tool = "layers" | "vessels" | "area" | "regions" | "gaps";
+type Tool = "layers" | "vessels" | "area" | "regions" | "gaps" | "analysis";
+
+const ANOMALY_LABELS: Record<string, string> = {
+  impossible_movement: "Impossible movement",
+  colocation: "Co-location stack",
+  identity_change: "Identity change",
+  identity_conflict: "Identity conflict",
+  possible_sts: "Possible STS",
+  speed_for_type: "Speed vs type",
+  nav_speed_mismatch: "Nav/speed mismatch",
+  loitering: "Loitering",
+};
 
 function cadenceLabel(min: number): string {
   return CADENCE_OPTIONS.find((o) => o.v === min)?.l ?? `${Math.round(min / 60)}h`;
@@ -103,6 +114,14 @@ export default function Workspace() {
   });
   const gapList = gapsOn ? gaps.data?.gaps ?? null : null;
   const confirmedCount = gapList?.filter((g) => g.tier === "confirmed").length ?? 0;
+
+  // Vessel anomalies / pattern analysis (scanned server-side; always polled for the badge).
+  const [selectedAnomalyId, setSelectedAnomalyId] = useState<string | null>(null);
+  const [anomalyFilter, setAnomalyFilter] = useState<string | null>(null);
+  const anomalies = useQuery({ queryKey: ["anomalies"], queryFn: () => getAnomalies({ limit: 200 }), refetchInterval: 120000 });
+  const anomalyList = anomalies.data?.anomalies ?? [];
+  const shownAnomalies = anomalyFilter ? anomalyList.filter((a) => a.severity === anomalyFilter) : anomalyList;
+  const selectedAnomaly = anomalyList.find((a) => a.id === selectedAnomalyId) ?? null;
 
   // Area search — center + radius persist; the rest is transient.
   const [center, setCenter] = usePersistentState<{ lng: number; lat: number } | null>("areaCenter", null);
@@ -202,6 +221,7 @@ export default function Workspace() {
     { key: "area", label: "Area Search" },
     { key: "regions", label: "Regions", badge: regionCount },
     { key: "gaps", label: "AIS Gaps", badge: gapsOn ? gapList?.length ?? 0 : undefined },
+    { key: "analysis", label: "Vessel Analysis", badge: anomalyList.length || undefined },
   ];
 
   return (
@@ -556,6 +576,109 @@ export default function Workspace() {
               </ul>
               {gaps.data?.satelliteNote && (
                 <p className="mt-2 text-[10px] leading-snug text-gray-600">{gaps.data.satelliteNote}</p>
+              )}
+            </>
+          )}
+        </Modal>
+      )}
+
+      {tool === "analysis" && (
+        <Modal title="Vessel Analysis & Anomalies" onClose={() => { setTool(null); setSelectedAnomalyId(null); }} width="w-[34rem]">
+          <div className="rounded border border-white/10 bg-white/5 p-2 text-[10px] leading-snug text-gray-400">
+            {anomalies.data?.disclaimer ?? "Automated, display-only indicators derived from AIS patterns — not confirmed findings. Corroborate before acting."}
+          </div>
+
+          {selectedAnomaly ? (
+            <div className="mt-2 text-[12px]">
+              <button onClick={() => setSelectedAnomalyId(null)} className="text-[11px] text-sky-300 hover:underline">← back to list</button>
+              <div className="mt-1 flex items-center justify-between gap-2">
+                <span className="font-medium text-gray-100">{selectedAnomaly.title}</span>
+                <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] ${selectedAnomaly.severity === "high" ? "bg-red-500/20 text-red-300" : selectedAnomaly.severity === "medium" ? "bg-amber-500/20 text-amber-300" : "bg-slate-500/20 text-slate-300"}`}>{selectedAnomaly.severity}</span>
+              </div>
+              <div className="mt-0.5 text-[10px] text-gray-500">{ANOMALY_LABELS[selectedAnomaly.type] ?? selectedAnomaly.type}</div>
+              <p className="mt-2 text-gray-300">{selectedAnomaly.description}</p>
+              <dl className="mt-2 grid grid-cols-[7rem_1fr] gap-x-2 gap-y-0.5 text-[11px]">
+                <dt className="text-gray-500">Vessel</dt><dd className="text-gray-200">{selectedAnomaly.name || "—"}{selectedAnomaly.mmsi ? ` · MMSI ${selectedAnomaly.mmsi}` : ""}{selectedAnomaly.imo ? ` · IMO ${selectedAnomaly.imo}` : ""}</dd>
+                {selectedAnomaly.vesselType && (<><dt className="text-gray-500">Type</dt><dd className="text-gray-200">{selectedAnomaly.vesselType}</dd></>)}
+                {selectedAnomaly.latitude != null && (<><dt className="text-gray-500">Location</dt><dd className="text-gray-200">{selectedAnomaly.latitude.toFixed(3)}, {selectedAnomaly.longitude!.toFixed(3)}</dd></>)}
+                {selectedAnomaly.occurredAt && (<><dt className="text-gray-500">Occurred</dt><dd className="text-gray-200">{new Date(selectedAnomaly.occurredAt).toLocaleString()}</dd></>)}
+                <dt className="text-gray-500">Detected</dt><dd className="text-gray-200">{new Date(selectedAnomaly.detectedAt).toLocaleString()}</dd>
+              </dl>
+              {selectedAnomaly.details && (
+                <div className="mt-2">
+                  <div className="text-[10px] uppercase tracking-wide text-gray-500">Evidence</div>
+                  <dl className="mt-0.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px]">
+                    {Object.entries(selectedAnomaly.details).map(([k, v]) => (
+                      <div key={k} className="flex justify-between gap-2">
+                        <dt className="text-gray-500">{k}</dt>
+                        <dd className="truncate text-gray-300" title={typeof v === "object" ? JSON.stringify(v) : String(v)}>{typeof v === "object" ? JSON.stringify(v) : String(v)}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </div>
+              )}
+
+              {selectedAnomaly.mmsi && (
+                <div className="mt-3 border-t border-white/10 pt-2">
+                  <button onClick={() => setEnrichMmsi(selectedAnomaly.mmsi)} className="w-full rounded bg-sky-600 px-2 py-1 text-[12px] font-medium text-white hover:bg-sky-500">
+                    Enrich vessel (Data Docked)
+                  </button>
+                  {enrichMmsi === selectedAnomaly.mmsi && (
+                    <div className="mt-2 rounded border border-sky-500/20 bg-sky-500/5 p-2 text-[11px]">
+                      {enrich.isLoading ? <p className="text-gray-400">Fetching particulars from Data Docked…</p>
+                        : enrich.data?.status === "error" || enrich.isError ? <p className="text-amber-400">Enrichment failed: {enrich.data?.error ?? (enrich.error as Error)?.message}</p>
+                        : enrich.data ? (
+                          <>
+                            <div className="mb-1 flex items-center justify-between">
+                              <span className="font-medium text-sky-300">Vessel particulars</span>
+                              {enrich.data.creditsSpent != null && <span className="text-[10px] text-gray-500">{enrich.data.creditsSpent} credit{enrich.data.creditsSpent === 1 ? "" : "s"}</span>}
+                            </div>
+                            {Object.keys(enrich.data.curated).length === 0 ? <p className="text-gray-500">No particulars returned.</p> : (
+                              <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5">
+                                {Object.entries(enrich.data.curated).map(([k, v]) => (
+                                  <div key={k} className="flex justify-between gap-2">
+                                    <dt className="text-gray-500">{k}</dt>
+                                    <dd className="truncate text-gray-200" title={String(v)}>{String(v)}</dd>
+                                  </div>
+                                ))}
+                              </dl>
+                            )}
+                          </>
+                        ) : null}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <>
+              <div className="mt-2 flex flex-wrap gap-1 text-[10px]">
+                {[null, "high", "medium", "low"].map((s) => (
+                  <button key={s ?? "all"} onClick={() => setAnomalyFilter(s)}
+                    className={`rounded px-2 py-0.5 ${anomalyFilter === s ? "bg-sky-500/20 text-sky-300" : "text-gray-400 hover:bg-white/10"}`}>
+                    {s ?? "all"}
+                  </button>
+                ))}
+                <span className="ml-auto text-gray-500">{shownAnomalies.length} finding{shownAnomalies.length === 1 ? "" : "s"}</span>
+              </div>
+              {anomalies.isLoading ? (
+                <p className="mt-2 text-gray-500">Scanning…</p>
+              ) : shownAnomalies.length === 0 ? (
+                <p className="mt-2 text-gray-500">No anomalies detected yet. The analysis scan runs about every 20 minutes over recent AIS history.</p>
+              ) : (
+                <ul className="mt-2 max-h-80 space-y-1 overflow-auto">
+                  {shownAnomalies.map((a) => (
+                    <li key={a.id}>
+                      <button onClick={() => setSelectedAnomalyId(a.id)} className="w-full rounded border border-white/10 px-2 py-1.5 text-left hover:bg-white/5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate text-[12px] text-gray-200">{a.title}</span>
+                          <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] ${a.severity === "high" ? "bg-red-500/20 text-red-300" : a.severity === "medium" ? "bg-amber-500/20 text-amber-300" : "bg-slate-500/20 text-slate-300"}`}>{a.severity}</span>
+                        </div>
+                        <div className="truncate text-[10px] text-gray-500">{ANOMALY_LABELS[a.type] ?? a.type} · {a.name || a.mmsi || a.imo || "—"}</div>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
               )}
             </>
           )}
