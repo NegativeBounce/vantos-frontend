@@ -246,7 +246,7 @@ export default function Workspace() {
       />
 
       {/* Tool tabs */}
-      <div className="absolute left-3 top-3 z-20 flex gap-1 rounded-lg border border-white/10 bg-black/60 p-1 text-xs backdrop-blur">
+      <div className="absolute left-3 top-3 z-20 flex max-w-[calc(100%-1.5rem)] flex-wrap gap-1 rounded-lg border border-white/10 bg-black/60 p-1 text-xs backdrop-blur">
         {TOOLS.map((t) => (
           <button
             key={t.key}
