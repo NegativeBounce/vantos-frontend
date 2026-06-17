@@ -173,6 +173,23 @@ export type AisGapResult = {
 export const getAisGaps = (minutes = 30, verify = false) =>
   apiGet<AisGapResult>(`/api/ais-gaps?minutes=${minutes}${verify ? "&verify=1" : ""}`);
 
+// ---- GNSS interference (ADS-B) ----
+export type GnssConfidence = "none" | "low" | "medium" | "high" | "insufficient";
+export type GnssRegion = {
+  regionId: string;
+  region: string | null;
+  observed: number;
+  degraded: number;
+  fraction: number;
+  confidence: GnssConfidence;
+  centerLat: number | null;
+  centerLon: number | null;
+  sample: unknown[];
+  assessedAt: string;
+};
+export type GnssResult = { status: string; disclaimer: string; count: number; regions: GnssRegion[] };
+export const getGnssInterference = () => apiGet<GnssResult>("/api/gnss-interference");
+
 export type DataSource = {
   id: string;
   provider: string;

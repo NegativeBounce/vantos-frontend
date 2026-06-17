@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import MapView, { type PickedVessel } from "../components/MapView";
 import Modal from "../components/Modal";
-import { getRegions, getPositions, getVesselTrack, getAisGaps, enrichVessel, searchArea, setRegionCollection, pullRegion, type AreaSearchResult } from "../lib/api";
+import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, enrichVessel, searchArea, setRegionCollection, pullRegion, type AreaSearchResult } from "../lib/api";
 
 const REPORT_TYPES = ["Insurance Risk Advisory", "Weekly Maritime Intelligence", "Vessel Captain Advisory"];
 type Tool = "layers" | "vessels" | "area" | "regions" | "gaps";
@@ -58,6 +58,19 @@ export default function Workspace() {
     enabled: !!enrichMmsi,
     staleTime: 6 * 60 * 60_000,
   });
+
+  // GNSS interference (ADS-B) layer.
+  const [gnssOn, setGnssOn] = useState(false);
+  const gnss = useQuery({ queryKey: ["gnss"], queryFn: getGnssInterference, enabled: gnssOn, refetchInterval: 120000 });
+  const gnssPoints = useMemo(
+    () =>
+      gnssOn
+        ? (gnss.data?.regions ?? [])
+            .filter((r) => r.centerLat != null && r.centerLon != null)
+            .map((r) => ({ lng: r.centerLon as number, lat: r.centerLat as number, region: r.region ?? "", fraction: r.fraction, confidence: r.confidence, observed: r.observed, degraded: r.degraded }))
+        : null,
+    [gnssOn, gnss.data]
+  );
 
   // Dark-shipping / AIS-gap indicators (opt-in layer).
   const [gapsOn, setGapsOn] = useState(false);
@@ -183,6 +196,7 @@ export default function Workspace() {
         selection={center ? { lng: center.lng, lat: center.lat, radiusKm } : null}
         track={trackCoords}
         gaps={gapList}
+        gnss={gnssPoints}
         regionPolys={regionPolys}
         pois={pois}
         onPoiClick={(p) => { setCenter({ lng: p.lng, lat: p.lat }); setRadiusKm(50); setTool("area"); }}
@@ -233,9 +247,16 @@ export default function Workspace() {
               AIS Gap / Dark Shipping Indicator — not a confirmed dark-vessel detection. See the AIS Gaps tab for the full caveat.
             </p>
           )}
-          <label className="mt-2 flex items-center gap-2 text-gray-500">
-            <input type="checkbox" disabled /> ADS-B / GNSS interference <span className="text-[10px]">(soon)</span>
+          <label className="mt-2 flex items-center gap-2 text-gray-300">
+            <input type="checkbox" checked={gnssOn} onChange={(e) => setGnssOn(e.target.checked)} />
+            ADS-B / GNSS interference <span className="text-[10px] text-orange-400/70">(indicator only)</span>
           </label>
+          {gnssOn && (
+            <p className="ml-6 rounded bg-orange-500/10 p-1.5 text-[10px] leading-snug text-orange-300/90">
+              Per-region GPS/GNSS jamming indicator from ADS-B aircraft reporting degraded nav integrity. Enable
+              <strong> ADS-B</strong> on a region (Regions tab) and pull it. Not a confirmed jamming/spoofing detection.
+            </p>
+          )}
           <label className="mt-2 flex items-center gap-2 text-gray-500">
             <input type="checkbox" disabled /> Imagery <span className="text-[10px]">(soon)</span>
           </label>

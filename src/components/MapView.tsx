@@ -10,6 +10,7 @@ export type Selection = { lng: number; lat: number; radiusKm: number } | null;
 export type PickedVessel = { mmsi: string | null; name: string | null };
 export type RegionPoly = { id: string; name: string; bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number } };
 export type Poi = { id: string; name: string; type: string; lng: number; lat: number };
+export type GnssPoint = { lng: number; lat: number; region: string; fraction: number; confidence: string; observed: number; degraded: number };
 
 // Persist the map view across tab switches (module-level survives unmount within the session).
 type View = { center: [number, number]; zoom: number; bearing: number; pitch: number };
@@ -90,6 +91,20 @@ function poisData(pois: Poi[] | null): GeoJSON.FeatureCollection {
   };
 }
 
+function gnssData(items: GnssPoint[] | null): GeoJSON.FeatureCollection {
+  if (!items || !items.length) return EMPTY;
+  return {
+    type: "FeatureCollection",
+    features: items
+      .filter((g) => Number.isFinite(g.lng) && Number.isFinite(g.lat) && (g.confidence === "low" || g.confidence === "medium" || g.confidence === "high"))
+      .map((g) => ({
+        type: "Feature",
+        properties: { region: g.region, fraction: g.fraction, confidence: g.confidence, observed: g.observed, degraded: g.degraded },
+        geometry: { type: "Point", coordinates: [g.lng, g.lat] },
+      })),
+  };
+}
+
 function gapsData(gaps: AisGap[] | null): GeoJSON.FeatureCollection {
   if (!gaps || !gaps.length) return EMPTY;
   return {
@@ -109,6 +124,7 @@ export default function MapView({
   selection,
   track,
   gaps,
+  gnss,
   regionPolys,
   pois,
   onPoiClick,
@@ -122,6 +138,7 @@ export default function MapView({
   selection: Selection;
   track: [number, number][] | null;
   gaps: AisGap[] | null;
+  gnss: GnssPoint[] | null;
   regionPolys: RegionPoly[] | null;
   pois: Poi[] | null;
   onPoiClick: (poi: Poi) => void;
@@ -185,6 +202,42 @@ export default function MapView({
         layout: { "text-field": ["get", "name"], "text-size": 11, "text-offset": [0, 0.3], "symbol-placement": "point" },
         paint: { "text-color": "#86efac", "text-halo-color": "#0b0f14", "text-halo-width": 1.2 },
       });
+
+      // GNSS interference indicators (ADS-B) — area overlay at the region center.
+      const gnssColor: mapboxgl.ExpressionSpecification = ["match", ["get", "confidence"], "high", "#ef4444", "medium", "#f97316", "#eab308"];
+      map.addSource("gnss", { type: "geojson", data: EMPTY });
+      map.addLayer({
+        id: "gnss-halo",
+        type: "circle",
+        source: "gnss",
+        paint: { "circle-radius": 26, "circle-color": gnssColor, "circle-opacity": 0.16, "circle-stroke-color": gnssColor, "circle-stroke-width": 1.5, "circle-stroke-opacity": 0.6 },
+      });
+      map.addLayer({
+        id: "gnss-label",
+        type: "symbol",
+        source: "gnss",
+        layout: { "text-field": ["concat", "GNSS · ", ["get", "region"]], "text-size": 10, "text-offset": [0, 2.2] },
+        paint: { "text-color": "#fca5a5", "text-halo-color": "#0b0f14", "text-halo-width": 1.2 },
+      });
+      const gnssPopup = new mapboxgl.Popup({ closeButton: false, offset: 14, className: "vantos-popup" });
+      map.on("click", "gnss-halo", (e) => {
+        const f = e.features?.[0];
+        if (!f) return;
+        const p = f.properties as { region?: string; fraction?: number; confidence?: string; observed?: number; degraded?: number };
+        const c = (f.geometry as GeoJSON.Point).coordinates as [number, number];
+        gnssPopup
+          .setLngLat(c)
+          .setHTML(
+            `<div style="font:12px system-ui;color:#e5e7eb;max-width:230px">
+               <div style="color:#f97316;font-weight:600">Possible GNSS interference</div>
+               <div>${p.region ?? ""} · ${Math.round((p.fraction ?? 0) * 100)}% degraded (${p.degraded}/${p.observed} aircraft) · ${p.confidence}</div>
+               <div style="color:#9ca3af;margin-top:3px">Indicator only — not a confirmed jamming/spoofing detection.</div>
+             </div>`
+          )
+          .addTo(map);
+      });
+      map.on("mouseenter", "gnss-halo", () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", "gnss-halo", () => (map.getCanvas().style.cursor = boxModeRef.current ? "crosshair" : ""));
 
       // Track (selected vessel movement history) — sits beneath vessel markers.
       map.addSource("track", { type: "geojson", data: EMPTY });
@@ -476,6 +529,17 @@ export default function MapView({
     if (map.getSource("gaps")) apply();
     else map.once("load", apply);
   }, [gaps]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      const src = map.getSource("gnss") as mapboxgl.GeoJSONSource | undefined;
+      if (src) src.setData(gnssData(gnss));
+    };
+    if (map.getSource("gnss")) apply();
+    else map.once("load", apply);
+  }, [gnss]);
 
   useEffect(() => {
     const map = mapRef.current;
