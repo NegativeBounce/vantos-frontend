@@ -21,9 +21,22 @@ export type GnssCellView = {
   dropEvents: number;
 };
 
-// Persist the map view across tab switches (module-level survives unmount within the session).
+// Persist the map view across tab switches (module var) AND reload (localStorage).
 type View = { center: [number, number]; zoom: number; bearing: number; pitch: number };
+const VIEW_KEY = "vantos.ws.mapView";
 let savedView: View | null = null;
+function loadView(): View | null {
+  if (savedView) return savedView;
+  try {
+    const raw = localStorage.getItem(VIEW_KEY);
+    if (raw) savedView = JSON.parse(raw) as View;
+  } catch { /* ignore */ }
+  return savedView;
+}
+function persistView(v: View): void {
+  savedView = v;
+  try { localStorage.setItem(VIEW_KEY, JSON.stringify(v)); } catch { /* ignore */ }
+}
 
 const VESSEL_LAYERS = ["clusters", "cluster-count", "vessels-circle"];
 
@@ -189,19 +202,20 @@ export default function MapView({
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
+    const view = loadView();
     const map = new mapboxgl.Map({
       container: containerRef.current,
       style: "mapbox://styles/mapbox/dark-v11",
-      center: savedView?.center ?? [43.4, 12.6],
-      zoom: savedView?.zoom ?? 5,
-      bearing: savedView?.bearing ?? 0,
-      pitch: savedView?.pitch ?? 0,
+      center: view?.center ?? [43.4, 12.6],
+      zoom: view?.zoom ?? 5,
+      bearing: view?.bearing ?? 0,
+      pitch: view?.pitch ?? 0,
     });
-    if (savedView) fittedRef.current = true;
+    if (view) fittedRef.current = true;
     map.addControl(new mapboxgl.NavigationControl(), "top-right");
     map.on("moveend", () => {
       const c = map.getCenter();
-      savedView = { center: [c.lng, c.lat], zoom: map.getZoom(), bearing: map.getBearing(), pitch: map.getPitch() };
+      persistView({ center: [c.lng, c.lat], zoom: map.getZoom(), bearing: map.getBearing(), pitch: map.getPitch() });
     });
 
     map.on("load", () => {
