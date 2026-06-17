@@ -62,12 +62,19 @@ export default function Workspace() {
   // GNSS interference (ADS-B) layer.
   const [gnssOn, setGnssOn] = useState(false);
   const gnss = useQuery({ queryKey: ["gnss"], queryFn: getGnssInterference, enabled: gnssOn, refetchInterval: 120000 });
-  const gnssPoints = useMemo(
+  const gnssCells = useMemo(
     () =>
       gnssOn
-        ? (gnss.data?.regions ?? [])
-            .filter((r) => r.centerLat != null && r.centerLon != null)
-            .map((r) => ({ lng: r.centerLon as number, lat: r.centerLat as number, region: r.region ?? "", fraction: r.fraction, confidence: r.confidence, observed: r.observed, degraded: r.degraded }))
+        ? (gnss.data?.cells ?? []).map((c) => ({
+            polygon: c.polygon,
+            region: c.region ?? "",
+            cellId: c.cellId,
+            severityPct: c.severityPct,
+            severityColor: c.severityColor,
+            confidence: c.confidence,
+            distinctAircraft: c.distinctAircraft,
+            dropEvents: c.dropEvents,
+          }))
         : null,
     [gnssOn, gnss.data]
   );
@@ -196,7 +203,7 @@ export default function Workspace() {
         selection={center ? { lng: center.lng, lat: center.lat, radiusKm } : null}
         track={trackCoords}
         gaps={gapList}
-        gnss={gnssPoints}
+        gnss={gnssCells}
         regionPolys={regionPolys}
         pois={pois}
         onPoiClick={(p) => { setCenter({ lng: p.lng, lat: p.lat }); setRadiusKm(50); setTool("area"); }}
@@ -252,10 +259,13 @@ export default function Workspace() {
             ADS-B / GNSS interference <span className="text-[10px] text-orange-400/70">(indicator only)</span>
           </label>
           {gnssOn && (
-            <p className="ml-6 rounded bg-orange-500/10 p-1.5 text-[10px] leading-snug text-orange-300/90">
-              Per-region GPS/GNSS jamming indicator from ADS-B aircraft reporting degraded nav integrity. Enable
-              <strong> ADS-B</strong> on a region (Regions tab) and pull it. Not a confirmed jamming/spoofing detection.
-            </p>
+            <div className="ml-6 rounded bg-orange-500/10 p-1.5 text-[10px] leading-snug text-orange-300/90">
+              <div>0.1° cell heatmap of aircraft reporting degraded nav integrity (NIC), 6h window. Enable <strong>ADS-B</strong> on a region (Regions tab) and pull it.</div>
+              <div className="mt-1 text-gray-400">
+                severity: <span className="text-green-400">●</span>&lt;2% <span className="text-yellow-400">●</span>2–10% <span className="text-orange-400">●</span>10–25% <span className="text-red-400">●</span>≥25% · opacity = confidence.
+              </div>
+              <div className="mt-0.5 text-orange-300/80">Not a confirmed jamming/spoofing detection.</div>
+            </div>
           )}
           <label className="mt-2 flex items-center gap-2 text-gray-500">
             <input type="checkbox" disabled /> Imagery <span className="text-[10px]">(soon)</span>

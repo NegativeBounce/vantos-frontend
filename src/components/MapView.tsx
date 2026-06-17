@@ -10,7 +10,16 @@ export type Selection = { lng: number; lat: number; radiusKm: number } | null;
 export type PickedVessel = { mmsi: string | null; name: string | null };
 export type RegionPoly = { id: string; name: string; bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number } };
 export type Poi = { id: string; name: string; type: string; lng: number; lat: number };
-export type GnssPoint = { lng: number; lat: number; region: string; fraction: number; confidence: string; observed: number; degraded: number };
+export type GnssCellView = {
+  polygon: GeoJSON.Polygon;
+  region: string;
+  cellId: string;
+  severityPct: number;
+  severityColor: string;
+  confidence: string;
+  distinctAircraft: number;
+  dropEvents: number;
+};
 
 // Persist the map view across tab switches (module-level survives unmount within the session).
 type View = { center: [number, number]; zoom: number; bearing: number; pitch: number };
@@ -91,17 +100,28 @@ function poisData(pois: Poi[] | null): GeoJSON.FeatureCollection {
   };
 }
 
-function gnssData(items: GnssPoint[] | null): GeoJSON.FeatureCollection {
-  if (!items || !items.length) return EMPTY;
+// GPSJAM severity colours; opacity carries confidence (multiplicative display).
+const GNSS_FILL: Record<string, string> = { red: "#ef4444", orange: "#f97316", yellow: "#eab308", green: "#22c55e", gray: "#6b7280" };
+const GNSS_OPACITY: Record<string, number> = { high: 0.5, medium: 0.36, low: 0.22, insufficient_data: 0.08 };
+
+function gnssData(cells: GnssCellView[] | null): GeoJSON.FeatureCollection {
+  if (!cells || !cells.length) return EMPTY;
   return {
     type: "FeatureCollection",
-    features: items
-      .filter((g) => Number.isFinite(g.lng) && Number.isFinite(g.lat) && (g.confidence === "low" || g.confidence === "medium" || g.confidence === "high"))
-      .map((g) => ({
-        type: "Feature",
-        properties: { region: g.region, fraction: g.fraction, confidence: g.confidence, observed: g.observed, degraded: g.degraded },
-        geometry: { type: "Point", coordinates: [g.lng, g.lat] },
-      })),
+    features: cells.map((c) => ({
+      type: "Feature",
+      properties: {
+        region: c.region,
+        severityPct: c.severityPct,
+        severityColor: c.severityColor,
+        confidence: c.confidence,
+        distinctAircraft: c.distinctAircraft,
+        dropEvents: c.dropEvents,
+        fill: GNSS_FILL[c.severityColor] ?? "#6b7280",
+        opacity: GNSS_OPACITY[c.confidence] ?? 0.1,
+      },
+      geometry: c.polygon,
+    })),
   };
 }
 
@@ -138,7 +158,7 @@ export default function MapView({
   selection: Selection;
   track: [number, number][] | null;
   gaps: AisGap[] | null;
-  gnss: GnssPoint[] | null;
+  gnss: GnssCellView[] | null;
   regionPolys: RegionPoly[] | null;
   pois: Poi[] | null;
   onPoiClick: (poi: Poi) => void;
@@ -203,41 +223,39 @@ export default function MapView({
         paint: { "text-color": "#86efac", "text-halo-color": "#0b0f14", "text-halo-width": 1.2 },
       });
 
-      // GNSS interference indicators (ADS-B) — area overlay at the region center.
-      const gnssColor: mapboxgl.ExpressionSpecification = ["match", ["get", "confidence"], "high", "#ef4444", "medium", "#f97316", "#eab308"];
+      // GNSS interference (ADS-B) — 0.1° cell heatmap; severity colour × confidence opacity.
       map.addSource("gnss", { type: "geojson", data: EMPTY });
       map.addLayer({
-        id: "gnss-halo",
-        type: "circle",
+        id: "gnss-fill",
+        type: "fill",
         source: "gnss",
-        paint: { "circle-radius": 26, "circle-color": gnssColor, "circle-opacity": 0.16, "circle-stroke-color": gnssColor, "circle-stroke-width": 1.5, "circle-stroke-opacity": 0.6 },
+        paint: { "fill-color": ["get", "fill"], "fill-opacity": ["get", "opacity"] },
       });
       map.addLayer({
-        id: "gnss-label",
-        type: "symbol",
+        id: "gnss-outline",
+        type: "line",
         source: "gnss",
-        layout: { "text-field": ["concat", "GNSS · ", ["get", "region"]], "text-size": 10, "text-offset": [0, 2.2] },
-        paint: { "text-color": "#fca5a5", "text-halo-color": "#0b0f14", "text-halo-width": 1.2 },
+        paint: { "line-color": ["get", "fill"], "line-width": 0.5, "line-opacity": 0.5 },
       });
-      const gnssPopup = new mapboxgl.Popup({ closeButton: false, offset: 14, className: "vantos-popup" });
-      map.on("click", "gnss-halo", (e) => {
+      const gnssPopup = new mapboxgl.Popup({ closeButton: false, offset: 8, className: "vantos-popup" });
+      map.on("click", "gnss-fill", (e) => {
         const f = e.features?.[0];
         if (!f) return;
-        const p = f.properties as { region?: string; fraction?: number; confidence?: string; observed?: number; degraded?: number };
-        const c = (f.geometry as GeoJSON.Point).coordinates as [number, number];
+        const p = f.properties as { region?: string; severityPct?: number; severityColor?: string; confidence?: string; distinctAircraft?: number; dropEvents?: number };
         gnssPopup
-          .setLngLat(c)
+          .setLngLat(e.lngLat)
           .setHTML(
-            `<div style="font:12px system-ui;color:#e5e7eb;max-width:230px">
-               <div style="color:#f97316;font-weight:600">Possible GNSS interference</div>
-               <div>${p.region ?? ""} · ${Math.round((p.fraction ?? 0) * 100)}% degraded (${p.degraded}/${p.observed} aircraft) · ${p.confidence}</div>
+            `<div style="font:12px system-ui;color:#e5e7eb;max-width:240px">
+               <div style="color:#f97316;font-weight:600">Aircraft-derived GNSS interference</div>
+               <div>${p.region ?? ""} · ${p.severityPct}% degraded · ${(p.confidence ?? "").replace("_", " ")}</div>
+               <div style="color:#9ca3af">${p.distinctAircraft} aircraft · ${p.dropEvents} drop events (6h)</div>
                <div style="color:#9ca3af;margin-top:3px">Indicator only — not a confirmed jamming/spoofing detection.</div>
              </div>`
           )
           .addTo(map);
       });
-      map.on("mouseenter", "gnss-halo", () => (map.getCanvas().style.cursor = "pointer"));
-      map.on("mouseleave", "gnss-halo", () => (map.getCanvas().style.cursor = boxModeRef.current ? "crosshair" : ""));
+      map.on("mouseenter", "gnss-fill", () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", "gnss-fill", () => (map.getCanvas().style.cursor = boxModeRef.current ? "crosshair" : ""));
 
       // Track (selected vessel movement history) — sits beneath vessel markers.
       map.addSource("track", { type: "geojson", data: EMPTY });

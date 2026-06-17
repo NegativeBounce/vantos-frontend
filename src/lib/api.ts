@@ -173,21 +173,25 @@ export type AisGapResult = {
 export const getAisGaps = (minutes = 30, verify = false) =>
   apiGet<AisGapResult>(`/api/ais-gaps?minutes=${minutes}${verify ? "&verify=1" : ""}`);
 
-// ---- GNSS interference (ADS-B) ----
-export type GnssConfidence = "none" | "low" | "medium" | "high" | "insufficient";
-export type GnssRegion = {
+// ---- GNSS interference (ADS-B) — per-cell heatmap ----
+export type GnssConfidence = "insufficient_data" | "low" | "medium" | "high";
+export type GnssSeverityColor = "gray" | "green" | "yellow" | "orange" | "red";
+export type GnssCell = {
   regionId: string;
   region: string | null;
-  observed: number;
-  degraded: number;
-  fraction: number;
+  cellId: string;
+  polygon: GeoJSON.Polygon;
+  severityPct: number;
+  severityColor: GnssSeverityColor;
   confidence: GnssConfidence;
-  centerLat: number | null;
-  centerLon: number | null;
-  sample: unknown[];
-  assessedAt: string;
+  totalObservations: number;
+  degradedObservations: number;
+  distinctAircraft: number;
+  maxCoincident15min: number;
+  dropEvents: number;
+  updatedAt: string;
 };
-export type GnssResult = { status: string; disclaimer: string; count: number; regions: GnssRegion[] };
+export type GnssResult = { status: string; disclaimer: string; count: number; cells: GnssCell[] };
 export const getGnssInterference = () => apiGet<GnssResult>("/api/gnss-interference");
 
 export type DataSource = {
