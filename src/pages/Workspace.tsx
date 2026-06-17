@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import MapView, { type PickedVessel } from "../components/MapView";
+import MapView, { type PickedVessel, type ViewportBbox } from "../components/MapView";
 import Modal from "../components/Modal";
 import { usePersistentState } from "../lib/persist";
 import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, enrichVessel, searchArea, setRegionCollection, pullRegion, type AreaSearchResult } from "../lib/api";
@@ -42,7 +42,10 @@ function fmtAgo(iso: string | null): string {
 export default function Workspace() {
   const qc = useQueryClient();
   const regions = useQuery({ queryKey: ["regions"], queryFn: getRegions });
-  const positions = useQuery({ queryKey: ["positions"], queryFn: getPositions, refetchInterval: 20000 });
+  // Viewport-based loading: fetch only vessels in the current map view (refetch on pan/zoom).
+  const [viewport, setViewport] = useState<ViewportBbox | null>(null);
+  const viewportKey = viewport ? `${viewport.minLat},${viewport.minLon},${viewport.maxLat},${viewport.maxLon}` : "global";
+  const positions = useQuery({ queryKey: ["positions", viewportKey], queryFn: () => getPositions(viewport), refetchInterval: 20000 });
 
   // Durable UI state — persisted across tab/route changes and reload (see lib/persist).
   const [tool, setTool] = usePersistentState<Tool | null>("tool", null);
@@ -238,6 +241,7 @@ export default function Workspace() {
         pois={pois}
         onPoiClick={(p) => { setCenter({ lng: p.lng, lat: p.lat }); setRadiusKm(50); setTool("area"); }}
         onMapClick={(lng, lat) => { if (areaPickMode) { setCenter({ lng, lat }); setAreaPickMode(false); } }}
+        onViewportChange={setViewport}
         aisVisible={aisVisible}
         boxSelectMode={boxMode}
         pickMode={areaPickMode}
@@ -308,8 +312,11 @@ export default function Workspace() {
         <Modal title="Vessels" onClose={() => setTool(null)}>
           <div className="text-gray-300">
             Shown <span className="font-mono text-sky-400">{displayed.length}</span>
-            <span className="text-gray-500"> / {allVessels.length}</span>
+            <span className="text-gray-500"> / {allVessels.length} in view</span>
           </div>
+          {positions.data?.truncated && (
+            <p className="mt-1 text-[10px] text-amber-300/80">View capped at 20,000 vessels — zoom in to see all in dense areas.</p>
+          )}
           <div className="mt-2 flex flex-wrap gap-1.5">
             <button
               onClick={() => setBoxMode((b) => !b)}

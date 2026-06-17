@@ -121,8 +121,17 @@ export type VesselPosition = {
   positionReceived: string | null;
   ingestedAt: string | null;
 };
-export const getPositions = () =>
-  apiGet<{ status: string; count: number; vessels: VesselPosition[] }>("/api/positions?limit=5000");
+export type Bbox = { minLat: number; minLon: number; maxLat: number; maxLon: number };
+export const getPositions = (bbox?: Bbox | null) => {
+  const q = new URLSearchParams({ limit: "20000" });
+  if (bbox) {
+    q.set("minLat", String(bbox.minLat));
+    q.set("minLon", String(bbox.minLon));
+    q.set("maxLat", String(bbox.maxLat));
+    q.set("maxLon", String(bbox.maxLon));
+  }
+  return apiGet<{ status: string; count: number; truncated: boolean; vessels: VesselPosition[] }>(`/api/positions?${q.toString()}`);
+};
 
 export type TrackPoint = {
   latitude: number;

@@ -10,6 +10,8 @@ export type Selection = { lng: number; lat: number; radiusKm: number } | null;
 export type PickedVessel = { mmsi: string | null; name: string | null };
 export type RegionPoly = { id: string; name: string; bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number } };
 export type Poi = { id: string; name: string; type: string; lng: number; lat: number };
+export type ViewportBbox = { minLat: number; minLon: number; maxLat: number; maxLon: number };
+
 export type GnssCellView = {
   polygon: GeoJSON.Polygon;
   region: string;
@@ -169,6 +171,7 @@ export default function MapView({
   pois,
   onPoiClick,
   onMapClick,
+  onViewportChange,
   aisVisible,
   boxSelectMode,
   pickMode,
@@ -186,6 +189,7 @@ export default function MapView({
   pois: Poi[] | null;
   onPoiClick: (poi: Poi) => void;
   onMapClick: (lng: number, lat: number) => void;
+  onViewportChange: (b: ViewportBbox | null) => void;
   aisVisible: boolean;
   boxSelectMode: boolean;
   pickMode: boolean;
@@ -199,6 +203,7 @@ export default function MapView({
   const onVesselClickRef = useRef(onVesselClick);
   const onBoxSelectRef = useRef(onBoxSelect);
   const onPoiClickRef = useRef(onPoiClick);
+  const onViewportChangeRef = useRef(onViewportChange);
   const onRegionClickRef = useRef(onRegionClick);
   const boxModeRef = useRef(boxSelectMode);
   const pickModeRef = useRef(pickMode);
@@ -207,6 +212,7 @@ export default function MapView({
   useEffect(() => { onVesselClickRef.current = onVesselClick; }, [onVesselClick]);
   useEffect(() => { onBoxSelectRef.current = onBoxSelect; }, [onBoxSelect]);
   useEffect(() => { onPoiClickRef.current = onPoiClick; }, [onPoiClick]);
+  useEffect(() => { onViewportChangeRef.current = onViewportChange; }, [onViewportChange]);
   useEffect(() => { onRegionClickRef.current = onRegionClick; }, [onRegionClick]);
   useEffect(() => { boxModeRef.current = boxSelectMode; }, [boxSelectMode]);
   useEffect(() => { pickModeRef.current = pickMode; }, [pickMode]);
@@ -224,10 +230,26 @@ export default function MapView({
     });
     if (view) fittedRef.current = true;
     map.addControl(new mapboxgl.NavigationControl(), "top-right");
+    // Emit the current viewport (outward-rounded to 0.1° to bound refetch churn) so the
+    // backend returns only in-view vessels. World-spanning view → null (global, capped).
+    const emitViewport = () => {
+      const b = map.getBounds();
+      if (!b) return;
+      const west = b.getWest(), east = b.getEast(), south = b.getSouth(), north = b.getNorth();
+      if (east - west >= 359 || west > east) { onViewportChangeRef.current(null); return; }
+      const fl = (n: number) => Math.floor(n * 10) / 10;
+      const cl = (n: number) => Math.ceil(n * 10) / 10;
+      onViewportChangeRef.current({
+        minLat: Math.max(-90, fl(south)), minLon: Math.max(-180, fl(west)),
+        maxLat: Math.min(90, cl(north)), maxLon: Math.min(180, cl(east)),
+      });
+    };
     map.on("moveend", () => {
       const c = map.getCenter();
       persistView({ center: [c.lng, c.lat], zoom: map.getZoom(), bearing: map.getBearing(), pitch: map.getPitch() });
+      emitViewport();
     });
+    map.on("load", emitViewport);
 
     map.on("load", () => {
       map.resize();
