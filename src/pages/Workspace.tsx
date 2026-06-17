@@ -2,10 +2,20 @@ import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import MapView, { type PickedVessel } from "../components/MapView";
 import Modal from "../components/Modal";
-import { getRegions, getPositions, getVesselTrack, getAisGaps, enrichVessel, searchArea, setRegionCollection, type AreaSearchResult } from "../lib/api";
+import { getRegions, getPositions, getVesselTrack, getAisGaps, enrichVessel, searchArea, setRegionCollection, pullRegion, type AreaSearchResult } from "../lib/api";
 
 const REPORT_TYPES = ["Insurance Risk Advisory", "Weekly Maritime Intelligence", "Vessel Captain Advisory"];
 type Tool = "layers" | "vessels" | "area" | "regions" | "gaps";
+
+function fmtAgo(iso: string | null): string {
+  if (!iso) return "never pulled";
+  const ms = Date.now() - Date.parse(iso);
+  if (!Number.isFinite(ms)) return "—";
+  const h = ms / 3_600_000;
+  if (h < 1) return `pulled ${Math.max(1, Math.round(ms / 60_000))}m ago`;
+  if (h < 24) return `pulled ${Math.round(h)}h ago`;
+  return `pulled ${Math.round(h / 24)}d ago`;
+}
 
 export default function Workspace() {
   const qc = useQueryClient();
@@ -20,8 +30,10 @@ export default function Workspace() {
   const [placesOn, setPlacesOn] = useState(false);
   const [boxMode, setBoxMode] = useState(false);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const [clearedAt, setClearedAt] = useState<number | null>(null);
   const [selected, setSelected] = useState<PickedVessel[]>([]);
   const [selectedRegionIds, setSelectedRegionIds] = useState<Set<string>>(new Set());
+  const [pullState, setPullState] = useState<Record<string, string>>({});
 
   // Track for the single selected vessel (only when the Tracks layer is on).
   const trackMmsi = selected.length === 1 ? selected[0].mmsi : null;
@@ -69,7 +81,16 @@ export default function Workspace() {
   const [generated, setGenerated] = useState<string | null>(null);
 
   const allVessels = positions.data?.vessels ?? [];
-  const displayed = useMemo(() => allVessels.filter((v) => !hidden.has(v.mmsi ?? "")), [allVessels, hidden]);
+  // "Clear map" wipes the view: only points pulled AFTER the clear reappear.
+  const displayed = useMemo(
+    () =>
+      allVessels.filter((v) => {
+        if (hidden.has(v.mmsi ?? "")) return false;
+        if (clearedAt && v.ingestedAt && Date.parse(v.ingestedAt) <= clearedAt) return false;
+        return true;
+      }),
+    [allVessels, hidden, clearedAt]
+  );
 
   // Split the canonical region list: coverage boxes (collected) vs POI labels.
   const allRegions = regions.data?.regions ?? [];
@@ -111,8 +132,24 @@ export default function Workspace() {
     });
     setSelected([]);
   }
-  const clearShown = () => hideVessels(displayed.map((v) => ({ mmsi: v.mmsi, name: v.name })));
-  const resetHidden = () => { setHidden(new Set()); setSelected([]); };
+  const clearMap = () => { setClearedAt(Date.now()); setSelected([]); };
+  const resetHidden = () => { setHidden(new Set()); setClearedAt(null); setSelected([]); };
+
+  async function doPull(id: string) {
+    setPullState((s) => ({ ...s, [id]: "starting" }));
+    try {
+      await pullRegion(id);
+      setPullState((s) => ({ ...s, [id]: "pulling" }));
+      // The snapshot takes ~3 min; refresh positions + region times once it should be done.
+      setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ["positions"] });
+        qc.invalidateQueries({ queryKey: ["regions"] });
+        setPullState((s) => ({ ...s, [id]: "done" }));
+      }, 200_000);
+    } catch (e) {
+      setPullState((s) => ({ ...s, [id]: `error: ${(e as Error).message}` }));
+    }
+  }
 
   async function runSearch() {
     if (!center) return;
@@ -176,6 +213,9 @@ export default function Workspace() {
             <input type="checkbox" checked={aisVisible} onChange={(e) => setAisVisible(e.target.checked)} />
             AIS (AISStream + Data Docked)
           </label>
+          <p className="ml-6 text-[10px] text-gray-500">
+            <span className="text-sky-400">●</span> fresh · <span className="text-slate-400">●</span> stale (last fix &gt; 6h)
+          </p>
           <label className="mt-2 flex items-center gap-2 text-gray-300">
             <input type="checkbox" checked={tracksOn} onChange={(e) => setTracksOn(e.target.checked)} />
             Tracks <span className="text-[10px] text-gray-500">(select one vessel · last 6h)</span>
@@ -215,10 +255,11 @@ export default function Workspace() {
             >
               {boxMode ? "Box select: ON" : "Box select"}
             </button>
-            <button onClick={clearShown} className="rounded border border-white/10 px-2 py-1 hover:bg-white/10">Clear shown</button>
+            <button onClick={clearMap} className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-amber-200 hover:bg-amber-500/20">Clear map</button>
             <button onClick={resetHidden} className="rounded border border-white/10 px-2 py-1 hover:bg-white/10">Reset</button>
           </div>
           {boxMode && <p className="mt-1 text-[10px] text-sky-300/80">Drag a rectangle on the map to select vessels.</p>}
+          {clearedAt && <p className="mt-1 text-[10px] text-amber-300/80">Map cleared — only vessels from new pulls will appear. Reset to restore.</p>}
 
           <div className="mt-3 border-t border-white/10 pt-2">
             <div className="text-gray-300">Selected: <span className="font-mono text-sky-400">{selected.length}</span></div>
@@ -326,33 +367,57 @@ export default function Workspace() {
           <div className="max-h-72 space-y-1.5 overflow-auto">
             {coverageRegions.map((r) => {
               const sel = selectedRegionIds.has(r.id);
+              const ps = pullState[r.id];
+              const pulling = ps === "starting" || ps === "pulling";
               return (
-                <div key={r.id} className={`flex items-center justify-between rounded border px-2 py-1.5 ${sel ? "border-emerald-500/50 bg-emerald-500/5" : "border-white/10"}`}>
-                  <button onClick={() => toggleRegionSelect(r.id)} className="min-w-0 flex-1 text-left" title="Show/hide on map">
-                    <div className="flex items-center gap-1.5">
-                      <span className={`inline-block h-2 w-2 shrink-0 rounded-sm ${sel ? "bg-emerald-400" : "bg-white/15"}`} />
-                      <span className={`truncate ${sel ? "text-emerald-200" : "text-gray-200"}`}>{r.name}</span>
+                <div key={r.id} className={`rounded border px-2 py-1.5 ${sel ? "border-emerald-500/50 bg-emerald-500/5" : "border-white/10"}`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <button onClick={() => toggleRegionSelect(r.id)} className="min-w-0 flex-1 text-left" title="Show/hide on map">
+                      <div className="flex items-center gap-1.5">
+                        <span className={`inline-block h-2 w-2 shrink-0 rounded-sm ${sel ? "bg-emerald-400" : "bg-white/15"}`} />
+                        <span className={`truncate ${sel ? "text-emerald-200" : "text-gray-200"}`}>{r.name}</span>
+                      </div>
+                      <div className="ml-3.5 truncate text-[10px] text-gray-500">{r.collectAis ? fmtAgo(r.lastAisPullAt) : "collection off"}</div>
+                    </button>
+                    <button
+                      onClick={() => doPull(r.id)}
+                      disabled={pulling || !r.boundingBox}
+                      className="shrink-0 rounded border border-sky-500/40 bg-sky-500/10 px-2 py-1 text-[11px] text-sky-200 hover:bg-sky-500/20 disabled:opacity-40"
+                      title="Pull a fresh AIS snapshot for this region now (~3 min)"
+                    >
+                      {pulling ? "Pulling…" : "Pull now"}
+                    </button>
+                  </div>
+                  <div className="mt-1.5 flex items-center justify-between">
+                    <span className="text-[10px] text-gray-600">{ps === "done" ? "snapshot done" : ps?.startsWith("error") ? ps : pulling ? "snapshot started (~3 min)" : ""}</span>
+                    <div className="flex shrink-0 gap-3 text-[11px]">
+                      <label className={`flex items-center gap-1 ${r.boundingBox ? "text-gray-300" : "text-gray-600"}`} title="AISStream snapshot collection (free; 24h auto-pull when on)">
+                        <input
+                          type="checkbox"
+                          checked={r.collectAis}
+                          disabled={!r.boundingBox}
+                          onChange={async (e) => { await setRegionCollection(r.id, { collectAis: e.target.checked }); qc.invalidateQueries({ queryKey: ["regions"] }); }}
+                        />
+                        AIS
+                      </label>
+                      <label className={`flex items-center gap-1 ${r.boundingBox ? "text-gray-300" : "text-gray-600"}`} title="Data Docked satellite supplement (spends credits; for terrestrial blind spots)">
+                        <input
+                          type="checkbox"
+                          checked={r.collectAisSatellite}
+                          disabled={!r.boundingBox}
+                          onChange={async (e) => { await setRegionCollection(r.id, { collectAisSatellite: e.target.checked }); qc.invalidateQueries({ queryKey: ["regions"] }); }}
+                        />
+                        Sat
+                      </label>
+                      <label className="flex items-center gap-1 text-gray-300" title="ADS-B collection wires up with Slice C">
+                        <input
+                          type="checkbox"
+                          checked={r.collectAdsb}
+                          onChange={async (e) => { await setRegionCollection(r.id, { collectAdsb: e.target.checked }); qc.invalidateQueries({ queryKey: ["regions"] }); }}
+                        />
+                        ADS-B
+                      </label>
                     </div>
-                    <div className="ml-3.5 truncate text-[10px] text-gray-500">{r.description ?? r.type}</div>
-                  </button>
-                  <div className="flex shrink-0 gap-3 pl-2 text-[11px]">
-                    <label className={`flex items-center gap-1 ${r.boundingBox ? "text-gray-300" : "text-gray-600"}`} title="AISStream terrestrial collection (free, continuous)">
-                      <input
-                        type="checkbox"
-                        checked={r.collectAis}
-                        disabled={!r.boundingBox}
-                        onChange={async (e) => { await setRegionCollection(r.id, { collectAis: e.target.checked }); qc.invalidateQueries({ queryKey: ["regions"] }); }}
-                      />
-                      AIS
-                    </label>
-                    <label className="flex items-center gap-1 text-gray-300" title="ADS-B collection wires up with Slice C">
-                      <input
-                        type="checkbox"
-                        checked={r.collectAdsb}
-                        onChange={async (e) => { await setRegionCollection(r.id, { collectAdsb: e.target.checked }); qc.invalidateQueries({ queryKey: ["regions"] }); }}
-                      />
-                      ADS-B
-                    </label>
                   </div>
                 </div>
               );
@@ -360,7 +425,7 @@ export default function Workspace() {
             {regionCount === 0 && <p className="text-gray-500">{regions.isLoading ? "Loading…" : "No regions."}</p>}
           </div>
           <p className="mt-2 text-[10px] text-gray-600">
-            <strong className="text-gray-500">AIS</strong> = AISStream terrestrial collection (free, continuous; nothing collects until on). Selected regions draw a green outline on the map. Chokepoints &amp; ports are on the <strong className="text-gray-500">Places</strong> layer. <strong className="text-gray-500">ADS-B</strong> wires up with Slice C.
+            <strong className="text-gray-500">AIS</strong> = AISStream snapshot (free); auto-pulls every 24h when on, or hit <strong className="text-gray-500">Pull now</strong>. <strong className="text-gray-500">Sat</strong> = Data Docked satellite supplement (credits; for blind spots). Selected regions draw a green outline; chokepoints &amp; ports are on the <strong className="text-gray-500">Places</strong> layer. <strong className="text-gray-500">ADS-B</strong> wires up with Slice C.
           </p>
         </Modal>
       )}

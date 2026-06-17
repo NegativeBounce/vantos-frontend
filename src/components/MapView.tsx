@@ -17,16 +17,25 @@ let savedView: View | null = null;
 
 const VESSEL_LAYERS = ["clusters", "cluster-count", "vessels-circle"];
 
+// A point is "stale" once its last AIS fix is older than this (24h pull cadence → it
+// ages through the day). Stale points stay visible but in a muted colour.
+const STALE_AFTER_MS = 6 * 60 * 60_000;
+
 function toVesselGeoJSON(vessels: VesselPosition[]): GeoJSON.FeatureCollection {
+  const now = Date.now();
   return {
     type: "FeatureCollection",
     features: vessels
       .filter((v) => Number.isFinite(v.latitude) && Number.isFinite(v.longitude))
-      .map((v) => ({
-        type: "Feature",
-        properties: { mmsi: v.mmsi, name: v.name, type: v.type, dataSource: v.dataSource },
-        geometry: { type: "Point", coordinates: [v.longitude, v.latitude] },
-      })),
+      .map((v) => {
+        const ts = v.ingestedAt ? Date.parse(v.ingestedAt) : NaN;
+        const stale = Number.isFinite(ts) ? now - ts > STALE_AFTER_MS : false;
+        return {
+          type: "Feature",
+          properties: { mmsi: v.mmsi, name: v.name, type: v.type, dataSource: v.dataSource, stale },
+          geometry: { type: "Point", coordinates: [v.longitude, v.latitude] },
+        };
+      }),
   };
 }
 
@@ -236,7 +245,14 @@ export default function MapView({
         type: "circle",
         source: "vessels",
         filter: ["!", ["has", "point_count"]],
-        paint: { "circle-radius": 5, "circle-color": "#38bdf8", "circle-stroke-color": "#0b0f14", "circle-stroke-width": 1 },
+        paint: {
+          "circle-radius": 5,
+          // Fresh = cyan; stale (last fix > 6h) = muted slate.
+          "circle-color": ["case", ["get", "stale"], "#64748b", "#38bdf8"],
+          "circle-opacity": ["case", ["get", "stale"], 0.6, 1],
+          "circle-stroke-color": "#0b0f14",
+          "circle-stroke-width": 1,
+        },
       });
 
       // AIS-gap / dark-shipping last-known-position markers (amber, above vessels).

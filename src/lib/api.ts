@@ -87,6 +87,7 @@ export type Region = {
   collectAisSatellite: boolean;
   boundingBox: { minLat: number; minLon: number; maxLat: number; maxLon: number } | null;
   center: { lat: number; lon: number } | null;
+  lastAisPullAt: string | null;
 };
 export const getRegions = () => apiGet<{ status: string; regions: Region[] }>("/api/regions");
 
@@ -104,6 +105,9 @@ export async function setRegionCollection(
   return data;
 }
 
+export const pullRegion = (id: string) =>
+  apiPost<{ status: string; regionId?: string; note?: string; error?: string }>(`/api/regions/${id}/pull`, {});
+
 export type VesselPosition = {
   mmsi: string | null;
   name: string | null;
@@ -113,6 +117,8 @@ export type VesselPosition = {
   speed: number | null;
   navStatus: string | null;
   dataSource: string | null;
+  positionReceived: string | null;
+  ingestedAt: string | null;
 };
 export const getPositions = () =>
   apiGet<{ status: string; count: number; vessels: VesselPosition[] }>("/api/positions?limit=5000");
