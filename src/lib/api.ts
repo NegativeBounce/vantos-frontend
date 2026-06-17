@@ -78,11 +78,15 @@ export type Region = {
   id: string;
   name: string;
   type: string;
+  description: string | null;
+  status: string;
   riskLevel: string | null;
+  kind: "coverage" | "poi";
   collectAis: boolean;
   collectAdsb: boolean;
   collectAisSatellite: boolean;
   boundingBox: { minLat: number; minLon: number; maxLat: number; maxLon: number } | null;
+  center: { lat: number; lon: number } | null;
 };
 export const getRegions = () => apiGet<{ status: string; regions: Region[] }>("/api/regions");
 

@@ -8,6 +8,8 @@ const EMPTY: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: 
 
 export type Selection = { lng: number; lat: number; radiusKm: number } | null;
 export type PickedVessel = { mmsi: string | null; name: string | null };
+export type RegionPoly = { id: string; name: string; bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number } };
+export type Poi = { id: string; name: string; type: string; lng: number; lat: number };
 
 // Persist the map view across tab switches (module-level survives unmount within the session).
 type View = { center: [number, number]; zoom: number; bearing: number; pitch: number };
@@ -51,6 +53,34 @@ function trackData(track: [number, number][] | null): GeoJSON.FeatureCollection 
   return { type: "FeatureCollection", features };
 }
 
+function regionPolysData(polys: RegionPoly[] | null): GeoJSON.FeatureCollection {
+  if (!polys || !polys.length) return EMPTY;
+  return {
+    type: "FeatureCollection",
+    features: polys.map((p) => {
+      const { minLat, minLon, maxLat, maxLon } = p.bbox;
+      const ring: [number, number][] = [
+        [minLon, minLat], [maxLon, minLat], [maxLon, maxLat], [minLon, maxLat], [minLon, minLat],
+      ];
+      return { type: "Feature", properties: { id: p.id, name: p.name }, geometry: { type: "Polygon", coordinates: [ring] } };
+    }),
+  };
+}
+
+function poisData(pois: Poi[] | null): GeoJSON.FeatureCollection {
+  if (!pois || !pois.length) return EMPTY;
+  return {
+    type: "FeatureCollection",
+    features: pois
+      .filter((p) => Number.isFinite(p.lng) && Number.isFinite(p.lat))
+      .map((p) => ({
+        type: "Feature",
+        properties: { id: p.id, name: p.name, type: p.type },
+        geometry: { type: "Point", coordinates: [p.lng, p.lat] },
+      })),
+  };
+}
+
 function gapsData(gaps: AisGap[] | null): GeoJSON.FeatureCollection {
   if (!gaps || !gaps.length) return EMPTY;
   return {
@@ -70,6 +100,9 @@ export default function MapView({
   selection,
   track,
   gaps,
+  regionPolys,
+  pois,
+  onPoiClick,
   onMapClick,
   aisVisible,
   boxSelectMode,
@@ -80,6 +113,9 @@ export default function MapView({
   selection: Selection;
   track: [number, number][] | null;
   gaps: AisGap[] | null;
+  regionPolys: RegionPoly[] | null;
+  pois: Poi[] | null;
+  onPoiClick: (poi: Poi) => void;
   onMapClick: (lng: number, lat: number) => void;
   aisVisible: boolean;
   boxSelectMode: boolean;
@@ -92,10 +128,13 @@ export default function MapView({
   const onMapClickRef = useRef(onMapClick);
   const onVesselClickRef = useRef(onVesselClick);
   const onBoxSelectRef = useRef(onBoxSelect);
+  const onPoiClickRef = useRef(onPoiClick);
   const boxModeRef = useRef(boxSelectMode);
+  const fittedRegionsRef = useRef<string>("");
   useEffect(() => { onMapClickRef.current = onMapClick; }, [onMapClick]);
   useEffect(() => { onVesselClickRef.current = onVesselClick; }, [onVesselClick]);
   useEffect(() => { onBoxSelectRef.current = onBoxSelect; }, [onBoxSelect]);
+  useEffect(() => { onPoiClickRef.current = onPoiClick; }, [onPoiClick]);
   useEffect(() => { boxModeRef.current = boxSelectMode; }, [boxSelectMode]);
 
   useEffect(() => {
@@ -120,6 +159,23 @@ export default function MapView({
       map.addSource("selection", { type: "geojson", data: EMPTY });
       map.addLayer({ id: "selection-fill", type: "fill", source: "selection", paint: { "fill-color": "#f59e0b", "fill-opacity": 0.12 } });
       map.addLayer({ id: "selection-outline", type: "line", source: "selection", paint: { "line-color": "#f59e0b", "line-width": 2 } });
+
+      // Selected coverage regions — semi-transparent green fill + thin dotted border.
+      map.addSource("regions", { type: "geojson", data: EMPTY });
+      map.addLayer({ id: "regions-fill", type: "fill", source: "regions", paint: { "fill-color": "#22c55e", "fill-opacity": 0.12 } });
+      map.addLayer({
+        id: "regions-outline",
+        type: "line",
+        source: "regions",
+        paint: { "line-color": "#22c55e", "line-width": 1.2, "line-dasharray": [2, 2], "line-opacity": 0.9 },
+      });
+      map.addLayer({
+        id: "regions-label",
+        type: "symbol",
+        source: "regions",
+        layout: { "text-field": ["get", "name"], "text-size": 11, "text-offset": [0, 0.3], "symbol-placement": "point" },
+        paint: { "text-color": "#86efac", "text-halo-color": "#0b0f14", "text-halo-width": 1.2 },
+      });
 
       // Track (selected vessel movement history) — sits beneath vessel markers.
       map.addSource("track", { type: "geojson", data: EMPTY });
@@ -234,6 +290,33 @@ export default function MapView({
       });
       map.on("mouseenter", "gaps-dot", () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", "gaps-dot", () => (map.getCanvas().style.cursor = boxModeRef.current ? "crosshair" : ""));
+
+      // POI labels (chokepoints / straits / ports) — clickable, no collection.
+      map.addSource("pois", { type: "geojson", data: EMPTY });
+      map.addLayer({
+        id: "pois-dot",
+        type: "circle",
+        source: "pois",
+        paint: { "circle-radius": 4, "circle-color": "#e2e8f0", "circle-stroke-color": "#0b0f14", "circle-stroke-width": 1.5 },
+      });
+      map.addLayer({
+        id: "pois-label",
+        type: "symbol",
+        source: "pois",
+        minzoom: 3.5,
+        layout: { "text-field": ["get", "name"], "text-size": 10, "text-offset": [0, 1], "text-anchor": "top", "text-optional": true },
+        paint: { "text-color": "#cbd5e1", "text-halo-color": "#0b0f14", "text-halo-width": 1.2 },
+      });
+      map.on("click", "pois-dot", (e) => {
+        if (boxModeRef.current) return;
+        const f = e.features?.[0];
+        if (!f) return;
+        const p = f.properties as { id?: string; name?: string; type?: string };
+        const c = (f.geometry as GeoJSON.Point).coordinates as [number, number];
+        onPoiClickRef.current({ id: p.id ?? "", name: p.name ?? "", type: p.type ?? "", lng: c[0], lat: c[1] });
+      });
+      map.on("mouseenter", "pois-dot", () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", "pois-dot", () => (map.getCanvas().style.cursor = boxModeRef.current ? "crosshair" : ""));
 
       // Click a cluster → zoom in.
       map.on("click", "clusters", (e) => {
@@ -377,6 +460,39 @@ export default function MapView({
     if (map.getSource("gaps")) apply();
     else map.once("load", apply);
   }, [gaps]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      const src = map.getSource("regions") as mapboxgl.GeoJSONSource | undefined;
+      if (src) src.setData(regionPolysData(regionPolys));
+      // Fly/fit to the selection when the set of selected regions changes.
+      const sig = (regionPolys ?? []).map((p) => p.id).sort().join(",");
+      if (sig && sig !== fittedRegionsRef.current && regionPolys && regionPolys.length) {
+        const b = new mapboxgl.LngLatBounds();
+        regionPolys.forEach((p) => {
+          b.extend([p.bbox.minLon, p.bbox.minLat]);
+          b.extend([p.bbox.maxLon, p.bbox.maxLat]);
+        });
+        if (!b.isEmpty()) map.fitBounds(b, { padding: 60, maxZoom: 7, duration: 600 });
+      }
+      fittedRegionsRef.current = sig;
+    };
+    if (map.getSource("regions")) apply();
+    else map.once("load", apply);
+  }, [regionPolys]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      const src = map.getSource("pois") as mapboxgl.GeoJSONSource | undefined;
+      if (src) src.setData(poisData(pois));
+    };
+    if (map.getSource("pois")) apply();
+    else map.once("load", apply);
+  }, [pois]);
 
   useEffect(() => {
     const map = mapRef.current;
