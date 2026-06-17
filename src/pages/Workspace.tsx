@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import MapView, { type PickedVessel } from "../components/MapView";
 import Modal from "../components/Modal";
+import { usePersistentState } from "../lib/persist";
 import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, enrichVessel, searchArea, setRegionCollection, pullRegion, type AreaSearchResult } from "../lib/api";
 
 const REPORT_TYPES = ["Insurance Risk Advisory", "Weekly Maritime Intelligence", "Vessel Captain Advisory"];
@@ -22,17 +23,19 @@ export default function Workspace() {
   const regions = useQuery({ queryKey: ["regions"], queryFn: getRegions });
   const positions = useQuery({ queryKey: ["positions"], queryFn: getPositions, refetchInterval: 20000 });
 
-  const [tool, setTool] = useState<Tool | null>(null);
+  // Durable UI state — persisted across tab/route changes and reload (see lib/persist).
+  const [tool, setTool] = usePersistentState<Tool | null>("tool", null);
+  const [aisVisible, setAisVisible] = usePersistentState("aisVisible", true);
+  const [tracksOn, setTracksOn] = usePersistentState("tracksOn", false);
+  const [placesOn, setPlacesOn] = usePersistentState("placesOn", false);
+  const [boxMode, setBoxMode] = usePersistentState("boxMode", false);
+  const [hidden, setHidden] = usePersistentState<string[]>("hidden", []);
+  const [clearedAt, setClearedAt] = usePersistentState<number | null>("clearedAt", null);
+  const [selected, setSelected] = usePersistentState<PickedVessel[]>("selected", []);
+  const [selectedRegionIds, setSelectedRegionIds] = usePersistentState<string[]>("selectedRegionIds", []);
 
-  // AIS display controls
-  const [aisVisible, setAisVisible] = useState(true);
-  const [tracksOn, setTracksOn] = useState(false);
-  const [placesOn, setPlacesOn] = useState(false);
-  const [boxMode, setBoxMode] = useState(false);
-  const [hidden, setHidden] = useState<Set<string>>(new Set());
-  const [clearedAt, setClearedAt] = useState<number | null>(null);
-  const [selected, setSelected] = useState<PickedVessel[]>([]);
-  const [selectedRegionIds, setSelectedRegionIds] = useState<Set<string>>(new Set());
+  // Transient interaction/operation state — intentionally NOT persisted.
+  const [areaPickMode, setAreaPickMode] = useState(false);
   const [pullState, setPullState] = useState<Record<string, string>>({});
 
   // Track for the single selected vessel (only when the Tracks layer is on).
@@ -60,7 +63,7 @@ export default function Workspace() {
   });
 
   // GNSS interference (ADS-B) layer.
-  const [gnssOn, setGnssOn] = useState(false);
+  const [gnssOn, setGnssOn] = usePersistentState("gnssOn", false);
   const gnss = useQuery({ queryKey: ["gnss"], queryFn: getGnssInterference, enabled: gnssOn, refetchInterval: 120000 });
   const gnssCells = useMemo(
     () =>
@@ -80,8 +83,8 @@ export default function Workspace() {
   );
 
   // Dark-shipping / AIS-gap indicators (opt-in layer).
-  const [gapsOn, setGapsOn] = useState(false);
-  const [verifySat, setVerifySat] = useState(false);
+  const [gapsOn, setGapsOn] = usePersistentState("gapsOn", false);
+  const [verifySat, setVerifySat] = usePersistentState("verifySat", false);
   const gaps = useQuery({
     queryKey: ["ais-gaps", verifySat],
     queryFn: () => getAisGaps(30, verifySat),
@@ -91,9 +94,9 @@ export default function Workspace() {
   const gapList = gapsOn ? gaps.data?.gaps ?? null : null;
   const confirmedCount = gapList?.filter((g) => g.tier === "confirmed").length ?? 0;
 
-  // Area search
-  const [center, setCenter] = useState<{ lng: number; lat: number } | null>(null);
-  const [radiusKm, setRadiusKm] = useState(50);
+  // Area search — center + radius persist; the rest is transient.
+  const [center, setCenter] = usePersistentState<{ lng: number; lat: number } | null>("areaCenter", null);
+  const [radiusKm, setRadiusKm] = usePersistentState("areaRadiusKm", 50);
   const [searching, setSearching] = useState(false);
   const [result, setResult] = useState<AreaSearchResult | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
@@ -105,7 +108,7 @@ export default function Workspace() {
   const displayed = useMemo(
     () =>
       allVessels.filter((v) => {
-        if (hidden.has(v.mmsi ?? "")) return false;
+        if (hidden.includes(v.mmsi ?? "")) return false;
         if (clearedAt && v.ingestedAt && Date.parse(v.ingestedAt) <= clearedAt) return false;
         return true;
       }),
@@ -123,7 +126,7 @@ export default function Workspace() {
   const regionPolys = useMemo(
     () =>
       coverageRegions
-        .filter((r) => selectedRegionIds.has(r.id) && r.boundingBox)
+        .filter((r) => selectedRegionIds.includes(r.id) && r.boundingBox)
         .map((r) => ({ id: r.id, name: r.name, bbox: r.boundingBox! })),
     [coverageRegions, selectedRegionIds]
   );
@@ -136,24 +139,18 @@ export default function Workspace() {
     [placesOn, poiRegions]
   );
   function toggleRegionSelect(id: string) {
-    setSelectedRegionIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+    setSelectedRegionIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
 
   function hideVessels(vessels: PickedVessel[]) {
     setHidden((prev) => {
-      const next = new Set(prev);
-      vessels.forEach((v) => v.mmsi && next.add(v.mmsi));
-      return next;
+      const add = vessels.map((v) => v.mmsi).filter((m): m is string => !!m);
+      return Array.from(new Set([...prev, ...add]));
     });
     setSelected([]);
   }
   const clearMap = () => { setClearedAt(Date.now()); setSelected([]); };
-  const resetHidden = () => { setHidden(new Set()); setClearedAt(null); setSelected([]); };
+  const resetHidden = () => { setHidden([]); setClearedAt(null); setSelected([]); };
 
   async function doPull(id: string) {
     setPullState((s) => ({ ...s, [id]: "starting" }));
@@ -207,9 +204,10 @@ export default function Workspace() {
         regionPolys={regionPolys}
         pois={pois}
         onPoiClick={(p) => { setCenter({ lng: p.lng, lat: p.lat }); setRadiusKm(50); setTool("area"); }}
-        onMapClick={(lng, lat) => setCenter({ lng, lat })}
+        onMapClick={(lng, lat) => { if (areaPickMode) { setCenter({ lng, lat }); setAreaPickMode(false); } }}
         aisVisible={aisVisible}
         boxSelectMode={boxMode}
+        pickMode={areaPickMode}
         onVesselClick={(v) => { setSelected([v]); setTool("vessels"); }}
         onBoxSelect={(vs) => { setSelected(vs); setTool("vessels"); }}
       />
@@ -362,25 +360,39 @@ export default function Workspace() {
       )}
 
       {tool === "area" && (
-        <Modal title="Area Search" onClose={() => setTool(null)}>
+        <Modal title="Area Search" onClose={() => { setTool(null); setAreaPickMode(false); }}>
+          <div className="rounded bg-sky-500/10 p-1.5 text-[11px] leading-snug text-sky-300/90">
+            Searches <strong>AIS vessels</strong> within a radius (Data Docked). More data sources will be added to area search over time.
+          </div>
+
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            <button
+              onClick={() => { setBoxMode(false); setAreaPickMode((p) => !p); }}
+              className={`rounded border px-2 py-1 ${areaPickMode ? "border-sky-400 bg-sky-500/20 text-sky-300" : "border-white/10 hover:bg-white/10"}`}
+            >
+              {areaPickMode ? "Picking… click the map" : center ? "Re-pick location" : "Pick location on map"}
+            </button>
+            {center && (
+              <button onClick={() => { setCenter(null); setAreaPickMode(false); }} className="rounded border border-white/10 px-2 py-1 hover:bg-white/10">
+                Clear
+              </button>
+            )}
+          </div>
+          {areaPickMode && <p className="mt-1 text-[10px] text-sky-300/80">Click anywhere on the map to set the search center.</p>}
+
           {center ? (
             <>
-              <div className="text-gray-400">center {center.lat.toFixed(2)}, {center.lng.toFixed(2)}</div>
+              <div className="mt-2 text-gray-400">center {center.lat.toFixed(2)}, {center.lng.toFixed(2)}</div>
               <label className="mt-2 block text-gray-400">
                 radius: <span className="font-mono text-amber-400">{radiusKm} km</span>
                 <input type="range" min={1} max={50} value={radiusKm} onChange={(e) => setRadiusKm(Number(e.target.value))} className="mt-1 w-full" />
               </label>
-              <div className="mt-2 flex gap-2">
-                <button onClick={runSearch} disabled={searching} className="rounded bg-amber-600 px-2 py-1 font-medium text-black hover:bg-amber-500 disabled:opacity-50">
-                  {searching ? "Searching…" : "Search this area"}
-                </button>
-                <button onClick={() => setCenter(null)} className="rounded border border-white/10 px-2 py-1 hover:bg-white/10">Clear</button>
-              </div>
+              <button onClick={runSearch} disabled={searching} className="mt-2 w-full rounded bg-amber-600 px-2 py-1 font-medium text-black hover:bg-amber-500 disabled:opacity-50">
+                {searching ? "Searching…" : "Search AIS in this area"}
+              </button>
             </>
           ) : (
-            <p className="text-gray-500">
-              {boxMode ? "Box-select is on — turn it off (Vessels tab) to drop a search center." : "Click the map to drop a center, then set a radius (≤50 km) and search."}
-            </p>
+            <p className="mt-2 text-gray-500">No location set. Use <strong>Pick location on map</strong>, then set a radius (≤50 km) and search.</p>
           )}
         </Modal>
       )}
@@ -389,15 +401,15 @@ export default function Workspace() {
         <Modal title="Regions" onClose={() => setTool(null)} width="w-[30rem]">
           <div className="mb-2 flex items-center justify-between">
             <p className="text-[11px] text-gray-500">Click a name to highlight it on the map; toggle AIS to collect.</p>
-            {selectedRegionIds.size > 0 && (
-              <button onClick={() => setSelectedRegionIds(new Set())} className="rounded border border-white/10 px-2 py-0.5 text-[10px] hover:bg-white/10">
-                Clear ({selectedRegionIds.size})
+            {selectedRegionIds.length > 0 && (
+              <button onClick={() => setSelectedRegionIds([])} className="rounded border border-white/10 px-2 py-0.5 text-[10px] hover:bg-white/10">
+                Clear ({selectedRegionIds.length})
               </button>
             )}
           </div>
           <div className="max-h-72 space-y-1.5 overflow-auto">
             {coverageRegions.map((r) => {
-              const sel = selectedRegionIds.has(r.id);
+              const sel = selectedRegionIds.includes(r.id);
               const ps = pullState[r.id];
               const pulling = ps === "starting" || ps === "pulling";
               return (

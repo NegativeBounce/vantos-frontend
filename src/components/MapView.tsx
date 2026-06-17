@@ -151,6 +151,7 @@ export default function MapView({
   onMapClick,
   aisVisible,
   boxSelectMode,
+  pickMode,
   onVesselClick,
   onBoxSelect,
 }: {
@@ -165,6 +166,7 @@ export default function MapView({
   onMapClick: (lng: number, lat: number) => void;
   aisVisible: boolean;
   boxSelectMode: boolean;
+  pickMode: boolean;
   onVesselClick: (v: PickedVessel) => void;
   onBoxSelect: (vessels: PickedVessel[]) => void;
 }) {
@@ -176,12 +178,14 @@ export default function MapView({
   const onBoxSelectRef = useRef(onBoxSelect);
   const onPoiClickRef = useRef(onPoiClick);
   const boxModeRef = useRef(boxSelectMode);
+  const pickModeRef = useRef(pickMode);
   const fittedRegionsRef = useRef<string>("");
   useEffect(() => { onMapClickRef.current = onMapClick; }, [onMapClick]);
   useEffect(() => { onVesselClickRef.current = onVesselClick; }, [onVesselClick]);
   useEffect(() => { onBoxSelectRef.current = onBoxSelect; }, [onBoxSelect]);
   useEffect(() => { onPoiClickRef.current = onPoiClick; }, [onPoiClick]);
   useEffect(() => { boxModeRef.current = boxSelectMode; }, [boxSelectMode]);
+  useEffect(() => { pickModeRef.current = pickMode; }, [pickMode]);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -255,7 +259,7 @@ export default function MapView({
           .addTo(map);
       });
       map.on("mouseenter", "gnss-fill", () => (map.getCanvas().style.cursor = "pointer"));
-      map.on("mouseleave", "gnss-fill", () => (map.getCanvas().style.cursor = boxModeRef.current ? "crosshair" : ""));
+      map.on("mouseleave", "gnss-fill", () => (map.getCanvas().style.cursor = boxModeRef.current || pickModeRef.current ? "crosshair" : ""));
 
       // Track (selected vessel movement history) — sits beneath vessel markers.
       map.addSource("track", { type: "geojson", data: EMPTY });
@@ -376,7 +380,7 @@ export default function MapView({
           .addTo(map);
       });
       map.on("mouseenter", "gaps-dot", () => (map.getCanvas().style.cursor = "pointer"));
-      map.on("mouseleave", "gaps-dot", () => (map.getCanvas().style.cursor = boxModeRef.current ? "crosshair" : ""));
+      map.on("mouseleave", "gaps-dot", () => (map.getCanvas().style.cursor = boxModeRef.current || pickModeRef.current ? "crosshair" : ""));
 
       // POI labels (chokepoints / straits / ports) — clickable, no collection.
       map.addSource("pois", { type: "geojson", data: EMPTY });
@@ -403,7 +407,7 @@ export default function MapView({
         onPoiClickRef.current({ id: p.id ?? "", name: p.name ?? "", type: p.type ?? "", lng: c[0], lat: c[1] });
       });
       map.on("mouseenter", "pois-dot", () => (map.getCanvas().style.cursor = "pointer"));
-      map.on("mouseleave", "pois-dot", () => (map.getCanvas().style.cursor = boxModeRef.current ? "crosshair" : ""));
+      map.on("mouseleave", "pois-dot", () => (map.getCanvas().style.cursor = boxModeRef.current || pickModeRef.current ? "crosshair" : ""));
 
       // Click a cluster → zoom in.
       map.on("click", "clusters", (e) => {
@@ -425,7 +429,7 @@ export default function MapView({
       });
       for (const lyr of ["clusters", "vessels-circle"]) {
         map.on("mouseenter", lyr, () => (map.getCanvas().style.cursor = "pointer"));
-        map.on("mouseleave", lyr, () => (map.getCanvas().style.cursor = boxModeRef.current ? "crosshair" : ""));
+        map.on("mouseleave", lyr, () => (map.getCanvas().style.cursor = boxModeRef.current || pickModeRef.current ? "crosshair" : ""));
       }
       // Click empty map → drop a search center.
       map.on("click", (e) => {
@@ -607,8 +611,8 @@ export default function MapView({
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    map.getCanvas().style.cursor = boxSelectMode ? "crosshair" : "";
-  }, [boxSelectMode]);
+    map.getCanvas().style.cursor = boxSelectMode || pickMode ? "crosshair" : "";
+  }, [boxSelectMode, pickMode]);
 
   return <div ref={containerRef} className="absolute inset-0" style={{ minHeight: "100%" }} />;
 }
