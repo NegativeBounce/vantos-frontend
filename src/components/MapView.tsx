@@ -85,16 +85,21 @@ function trackData(track: [number, number][] | null): GeoJSON.FeatureCollection 
   return { type: "FeatureCollection", features };
 }
 
-function regionPolysData(polys: RegionPoly[] | null): GeoJSON.FeatureCollection {
-  if (!polys || !polys.length) return EMPTY;
+function regionsData(regions: RegionPoly[] | null, selectedIds: string[]): GeoJSON.FeatureCollection {
+  if (!regions || !regions.length) return EMPTY;
+  const sel = new Set(selectedIds);
   return {
     type: "FeatureCollection",
-    features: polys.map((p) => {
+    features: regions.map((p) => {
       const { minLat, minLon, maxLat, maxLon } = p.bbox;
       const ring: [number, number][] = [
         [minLon, minLat], [maxLon, minLat], [maxLon, maxLat], [minLon, maxLat], [minLon, minLat],
       ];
-      return { type: "Feature", properties: { id: p.id, name: p.name }, geometry: { type: "Polygon", coordinates: [ring] } };
+      return {
+        type: "Feature",
+        properties: { rid: p.id, name: p.name, selected: sel.has(p.id) },
+        geometry: { type: "Polygon", coordinates: [ring] },
+      };
     }),
   };
 }
@@ -158,7 +163,9 @@ export default function MapView({
   track,
   gaps,
   gnss,
-  regionPolys,
+  regions,
+  selectedRegionIds,
+  onRegionClick,
   pois,
   onPoiClick,
   onMapClick,
@@ -173,7 +180,9 @@ export default function MapView({
   track: [number, number][] | null;
   gaps: AisGap[] | null;
   gnss: GnssCellView[] | null;
-  regionPolys: RegionPoly[] | null;
+  regions: RegionPoly[] | null;
+  selectedRegionIds: string[];
+  onRegionClick: (id: string) => void;
   pois: Poi[] | null;
   onPoiClick: (poi: Poi) => void;
   onMapClick: (lng: number, lat: number) => void;
@@ -190,6 +199,7 @@ export default function MapView({
   const onVesselClickRef = useRef(onVesselClick);
   const onBoxSelectRef = useRef(onBoxSelect);
   const onPoiClickRef = useRef(onPoiClick);
+  const onRegionClickRef = useRef(onRegionClick);
   const boxModeRef = useRef(boxSelectMode);
   const pickModeRef = useRef(pickMode);
   const fittedRegionsRef = useRef<string>("");
@@ -197,6 +207,7 @@ export default function MapView({
   useEffect(() => { onVesselClickRef.current = onVesselClick; }, [onVesselClick]);
   useEffect(() => { onBoxSelectRef.current = onBoxSelect; }, [onBoxSelect]);
   useEffect(() => { onPoiClickRef.current = onPoiClick; }, [onPoiClick]);
+  useEffect(() => { onRegionClickRef.current = onRegionClick; }, [onRegionClick]);
   useEffect(() => { boxModeRef.current = boxSelectMode; }, [boxSelectMode]);
   useEffect(() => { pickModeRef.current = pickMode; }, [pickMode]);
 
@@ -224,21 +235,86 @@ export default function MapView({
       map.addLayer({ id: "selection-fill", type: "fill", source: "selection", paint: { "fill-color": "#f59e0b", "fill-opacity": 0.12 } });
       map.addLayer({ id: "selection-outline", type: "line", source: "selection", paint: { "line-color": "#f59e0b", "line-width": 2 } });
 
-      // Selected coverage regions — semi-transparent green fill + thin dotted border.
-      map.addSource("regions", { type: "geojson", data: EMPTY });
-      map.addLayer({ id: "regions-fill", type: "fill", source: "regions", paint: { "fill-color": "#22c55e", "fill-opacity": 0.12 } });
+      // All coverage regions — interactive (hover/click). Selected = green fill + dotted
+      // border + label; unselected = invisible fill but still hoverable/clickable; hovered
+      // = faint highlight. `promoteId: rid` lets feature-state track hover by region id.
+      map.addSource("regions", { type: "geojson", data: EMPTY, promoteId: "rid" });
+      map.addLayer({
+        id: "regions-fill",
+        type: "fill",
+        source: "regions",
+        paint: {
+          "fill-color": "#22c55e",
+          "fill-opacity": [
+            "case",
+            ["get", "selected"], 0.14,
+            ["boolean", ["feature-state", "hover"], false], 0.08,
+            0,
+          ],
+        },
+      });
       map.addLayer({
         id: "regions-outline",
         type: "line",
         source: "regions",
-        paint: { "line-color": "#22c55e", "line-width": 1.2, "line-dasharray": [2, 2], "line-opacity": 0.9 },
+        paint: {
+          "line-color": "#22c55e",
+          "line-dasharray": [2, 2],
+          "line-opacity": 0.9,
+          "line-width": [
+            "case",
+            ["get", "selected"], 1.2,
+            ["boolean", ["feature-state", "hover"], false], 0.8,
+            0,
+          ],
+        },
       });
       map.addLayer({
         id: "regions-label",
         type: "symbol",
         source: "regions",
+        filter: ["get", "selected"],
         layout: { "text-field": ["get", "name"], "text-size": 11, "text-offset": [0, 0.3], "symbol-placement": "point" },
         paint: { "text-color": "#86efac", "text-halo-color": "#0b0f14", "text-halo-width": 1.2 },
+      });
+      // Hover → name + click hint; click → region options modal. Suppressed in pick/box mode.
+      const regionPopup = new mapboxgl.Popup({ closeButton: false, offset: 8, className: "vantos-popup" });
+      let hoveredRid: string | null = null;
+      const clearRegionHover = () => {
+        if (hoveredRid !== null) map.setFeatureState({ source: "regions", id: hoveredRid }, { hover: false });
+        hoveredRid = null;
+        regionPopup.remove();
+      };
+      map.on("mousemove", "regions-fill", (e) => {
+        if (pickModeRef.current || boxModeRef.current) return;
+        const f = e.features?.[0];
+        if (!f) return;
+        const p = f.properties as { rid?: string; name?: string };
+        const rid = p.rid ?? null;
+        if (hoveredRid !== rid) {
+          if (hoveredRid !== null) map.setFeatureState({ source: "regions", id: hoveredRid }, { hover: false });
+          hoveredRid = rid;
+          if (rid !== null) map.setFeatureState({ source: "regions", id: rid }, { hover: true });
+        }
+        map.getCanvas().style.cursor = "pointer";
+        regionPopup
+          .setLngLat(e.lngLat)
+          .setHTML(`<div style="font:12px system-ui;color:#e5e7eb"><div style="font-weight:600">${p.name ?? "Region"}</div><div style="color:#9ca3af">Click for region options</div></div>`)
+          .addTo(map);
+      });
+      map.on("mouseleave", "regions-fill", () => {
+        clearRegionHover();
+        map.getCanvas().style.cursor = boxModeRef.current || pickModeRef.current ? "crosshair" : "";
+      });
+      map.on("click", "regions-fill", (e) => {
+        if (pickModeRef.current || boxModeRef.current) return;
+        // Let a more specific feature own the click if one is here.
+        const hit = map.queryRenderedFeatures(e.point, { layers: ["clusters", "vessels-circle", "gaps-dot", "gnss-fill", "pois-dot"] });
+        if (hit.length) return;
+        const f = e.features?.[0];
+        if (!f) return;
+        const rid = (f.properties as { rid?: string }).rid;
+        if (rid) onRegionClickRef.current(rid);
       });
 
       // GNSS interference (ADS-B) — 0.1° cell heatmap; severity colour × confidence opacity.
@@ -582,12 +658,13 @@ export default function MapView({
     if (!map) return;
     const apply = () => {
       const src = map.getSource("regions") as mapboxgl.GeoJSONSource | undefined;
-      if (src) src.setData(regionPolysData(regionPolys));
+      if (src) src.setData(regionsData(regions, selectedRegionIds));
       // Fly/fit to the selection when the set of selected regions changes.
-      const sig = (regionPolys ?? []).map((p) => p.id).sort().join(",");
-      if (sig && sig !== fittedRegionsRef.current && regionPolys && regionPolys.length) {
+      const selected = (regions ?? []).filter((r) => selectedRegionIds.includes(r.id));
+      const sig = selected.map((p) => p.id).sort().join(",");
+      if (sig && sig !== fittedRegionsRef.current) {
         const b = new mapboxgl.LngLatBounds();
-        regionPolys.forEach((p) => {
+        selected.forEach((p) => {
           b.extend([p.bbox.minLon, p.bbox.minLat]);
           b.extend([p.bbox.maxLon, p.bbox.maxLat]);
         });
@@ -597,7 +674,7 @@ export default function MapView({
     };
     if (map.getSource("regions")) apply();
     else map.once("load", apply);
-  }, [regionPolys]);
+  }, [regions, selectedRegionIds]);
 
   useEffect(() => {
     const map = mapRef.current;

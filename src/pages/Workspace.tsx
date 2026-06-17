@@ -122,14 +122,15 @@ export default function Workspace() {
   const poiRegions = useMemo(() => activeRegions.filter((r) => r.kind === "poi"), [activeRegions]);
   const regionCount = coverageRegions.length;
 
-  // Selected coverage regions → green dotted polygons on the map.
-  const regionPolys = useMemo(
-    () =>
-      coverageRegions
-        .filter((r) => selectedRegionIds.includes(r.id) && r.boundingBox)
-        .map((r) => ({ id: r.id, name: r.name, bbox: r.boundingBox! })),
-    [coverageRegions, selectedRegionIds]
+  // All coverage regions with a bbox → interactive polygons on the map (hover/click);
+  // selected ones render green (styling handled in MapView via selectedRegionIds).
+  const regionShapes = useMemo(
+    () => coverageRegions.filter((r) => r.boundingBox).map((r) => ({ id: r.id, name: r.name, bbox: r.boundingBox! })),
+    [coverageRegions]
   );
+  // Region options modal opened by clicking a region on the map.
+  const [regionModalId, setRegionModalId] = useState<string | null>(null);
+  const regionModalRegion = coverageRegions.find((r) => r.id === regionModalId) ?? null;
   // POI labels (only when the Places layer is on).
   const pois = useMemo(
     () =>
@@ -201,7 +202,9 @@ export default function Workspace() {
         track={trackCoords}
         gaps={gapList}
         gnss={gnssCells}
-        regionPolys={regionPolys}
+        regions={regionShapes}
+        selectedRegionIds={selectedRegionIds}
+        onRegionClick={(id) => { setRegionModalId(id); setTool(null); }}
         pois={pois}
         onPoiClick={(p) => { setCenter({ lng: p.lng, lat: p.lat }); setRadiusKm(50); setTool("area"); }}
         onMapClick={(lng, lat) => { if (areaPickMode) { setCenter({ lng, lat }); setAreaPickMode(false); } }}
@@ -548,6 +551,54 @@ export default function Workspace() {
           )}
         </Modal>
       )}
+
+      {/* Region options — opened by clicking a region on the map */}
+      {regionModalRegion && (() => {
+        const r = regionModalRegion;
+        const sel = selectedRegionIds.includes(r.id);
+        const ps = pullState[r.id];
+        const pulling = ps === "starting" || ps === "pulling";
+        return (
+          <Modal title={r.name} onClose={() => setRegionModalId(null)}>
+            <div className="text-[11px] text-gray-500">{r.description ?? r.type}</div>
+            <div className="mt-0.5 text-[10px] text-gray-500">{r.collectAis ? fmtAgo(r.lastAisPullAt) : "AIS collection off"}</div>
+
+            <label className="mt-3 flex items-center gap-2 text-gray-300">
+              <input type="checkbox" checked={sel} onChange={() => toggleRegionSelect(r.id)} />
+              Show on map <span className="text-[10px] text-gray-500">(green outline)</span>
+            </label>
+
+            <div className="mt-3 border-t border-white/10 pt-2 text-[11px] text-gray-400">Data collection</div>
+            <div className="mt-1 flex flex-col gap-1.5 text-[12px]">
+              <label className={`flex items-center gap-2 ${r.boundingBox ? "text-gray-300" : "text-gray-600"}`}>
+                <input type="checkbox" checked={r.collectAis} disabled={!r.boundingBox}
+                  onChange={async (e) => { await setRegionCollection(r.id, { collectAis: e.target.checked }); qc.invalidateQueries({ queryKey: ["regions"] }); }} />
+                AIS <span className="text-[10px] text-gray-500">— AISStream snapshot (free; 24h auto-pull)</span>
+              </label>
+              <label className={`flex items-center gap-2 ${r.boundingBox ? "text-gray-300" : "text-gray-600"}`}>
+                <input type="checkbox" checked={r.collectAisSatellite} disabled={!r.boundingBox}
+                  onChange={async (e) => { await setRegionCollection(r.id, { collectAisSatellite: e.target.checked }); qc.invalidateQueries({ queryKey: ["regions"] }); }} />
+                Sat <span className="text-[10px] text-gray-500">— Data Docked satellite supplement (credits)</span>
+              </label>
+              <label className="flex items-center gap-2 text-gray-300">
+                <input type="checkbox" checked={r.collectAdsb}
+                  onChange={async (e) => { await setRegionCollection(r.id, { collectAdsb: e.target.checked }); qc.invalidateQueries({ queryKey: ["regions"] }); }} />
+                ADS-B <span className="text-[10px] text-gray-500">— GNSS interference (10-min)</span>
+              </label>
+            </div>
+
+            <div className="mt-3 flex items-center gap-2">
+              <button onClick={() => doPull(r.id)} disabled={pulling || !r.boundingBox}
+                className="rounded border border-sky-500/40 bg-sky-500/10 px-2 py-1 text-[11px] text-sky-200 hover:bg-sky-500/20 disabled:opacity-40"
+                title="Pull a fresh snapshot for this region now">
+                {pulling ? "Pulling…" : "Pull now"}
+              </button>
+              <span className="text-[10px] text-gray-600">{ps === "done" ? "snapshot done" : ps?.startsWith("error") ? ps : pulling ? "snapshot started (~3 min)" : ""}</span>
+            </div>
+            <p className="mt-2 text-[10px] text-gray-600">Same options as the Regions tab. Nothing collects until enabled.</p>
+          </Modal>
+        );
+      })()}
 
       {/* Report generation (blocking) */}
       {reportOpen && (
