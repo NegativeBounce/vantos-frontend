@@ -6,7 +6,17 @@ import { usePersistentState } from "../lib/persist";
 import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, enrichVessel, searchArea, setRegionCollection, pullRegion, type AreaSearchResult } from "../lib/api";
 
 const REPORT_TYPES = ["Insurance Risk Advisory", "Weekly Maritime Intelligence", "Vessel Captain Advisory"];
+const CADENCE_OPTIONS = [
+  { v: 1440, l: "24h" },
+  { v: 360, l: "6h" },
+  { v: 180, l: "3h" },
+  { v: 60, l: "1h" },
+];
 type Tool = "layers" | "vessels" | "area" | "regions" | "gaps";
+
+function cadenceLabel(min: number): string {
+  return CADENCE_OPTIONS.find((o) => o.v === min)?.l ?? `${Math.round(min / 60)}h`;
+}
 
 function fmtAgo(iso: string | null): string {
   if (!iso) return "never pulled";
@@ -240,7 +250,7 @@ export default function Workspace() {
           </p>
           <label className="mt-2 flex items-center gap-2 text-gray-300">
             <input type="checkbox" checked={tracksOn} onChange={(e) => setTracksOn(e.target.checked)} />
-            Tracks <span className="text-[10px] text-gray-500">(select one vessel · last 6h)</span>
+            Tracks <span className="text-[10px] text-gray-500">(select one vessel · last 7d)</span>
           </label>
           <label className="mt-2 flex items-center gap-2 text-gray-300">
             <input type="checkbox" checked={placesOn} onChange={(e) => setPlacesOn(e.target.checked)} />
@@ -298,7 +308,7 @@ export default function Workspace() {
             {tracksOn && trackMmsi && (
               <div className="mt-1 text-[11px] text-cyan-300/80">
                 {track.isFetching && !track.data ? "Loading track…"
-                  : (track.data?.count ?? 0) >= 2 ? `Track: ${track.data?.count} points over ${track.data?.hours}h`
+                  : (track.data?.count ?? 0) >= 2 ? `Track: ${track.data?.count} points (last 7d)`
                   : "Track: not enough history yet for this vessel."}
               </div>
             )}
@@ -423,7 +433,7 @@ export default function Workspace() {
                         <span className={`inline-block h-2 w-2 shrink-0 rounded-sm ${sel ? "bg-emerald-400" : "bg-white/15"}`} />
                         <span className={`truncate ${sel ? "text-emerald-200" : "text-gray-200"}`}>{r.name}</span>
                       </div>
-                      <div className="ml-3.5 truncate text-[10px] text-gray-500">{r.collectAis ? fmtAgo(r.lastAisPullAt) : "collection off"}</div>
+                      <div className="ml-3.5 truncate text-[10px] text-gray-500">{r.collectAis ? `${fmtAgo(r.lastAisPullAt)} · every ${cadenceLabel(r.aisPullCadenceMinutes)}` : "collection off"}</div>
                     </button>
                     <button
                       onClick={() => doPull(r.id)}
@@ -586,6 +596,18 @@ export default function Workspace() {
                 ADS-B <span className="text-[10px] text-gray-500">— GNSS interference (10-min)</span>
               </label>
             </div>
+
+            <label className="mt-3 flex items-center justify-between text-[12px] text-gray-300">
+              <span>AIS pull cadence</span>
+              <select
+                value={r.aisPullCadenceMinutes}
+                onChange={async (e) => { await setRegionCollection(r.id, { aisPullCadenceMinutes: Number(e.target.value) }); qc.invalidateQueries({ queryKey: ["regions"] }); }}
+                className="rounded bg-black/30 px-2 py-1 text-[11px] ring-1 ring-white/10"
+              >
+                {CADENCE_OPTIONS.map((o) => <option key={o.v} value={o.v}>{o.l}</option>)}
+              </select>
+            </label>
+            <p className="text-[10px] text-gray-600">More frequent = finer tracks &amp; gap detection (and more collection). Default 24h.</p>
 
             <div className="mt-3 flex items-center gap-2">
               <button onClick={() => doPull(r.id)} disabled={pulling || !r.boundingBox}

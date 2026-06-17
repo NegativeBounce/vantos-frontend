@@ -88,12 +88,13 @@ export type Region = {
   boundingBox: { minLat: number; minLon: number; maxLat: number; maxLon: number } | null;
   center: { lat: number; lon: number } | null;
   lastAisPullAt: string | null;
+  aisPullCadenceMinutes: number;
 };
 export const getRegions = () => apiGet<{ status: string; regions: Region[] }>("/api/regions");
 
 export async function setRegionCollection(
   id: string,
-  input: { collectAis?: boolean; collectAdsb?: boolean; collectAisSatellite?: boolean }
+  input: { collectAis?: boolean; collectAdsb?: boolean; collectAisSatellite?: boolean; aisPullCadenceMinutes?: number }
 ): Promise<{ status: string; region?: Region; error?: string }> {
   const res = await authedFetch(`/api/regions/${id}`, {
     method: "PATCH",
@@ -131,7 +132,7 @@ export type TrackPoint = {
   positionReceived: string | null;
   ingestedAt: string;
 };
-export const getVesselTrack = (mmsi: string, hours = 6) =>
+export const getVesselTrack = (mmsi: string, hours = 168) =>
   apiGet<{ status: string; mmsi: string; hours: number; count: number; points: TrackPoint[] }>(
     `/api/vessels/${encodeURIComponent(mmsi)}/track?hours=${hours}`
   );
