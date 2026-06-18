@@ -1,9 +1,11 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import MapView, { type PickedVessel, type ViewportBbox } from "../components/MapView";
+import MapView, { type PickedVessel, type ViewportBbox, type FlyTo } from "../components/MapView";
 import Modal from "../components/Modal";
+import MonitorButton from "../components/MonitorButton";
 import { usePersistentState } from "../lib/persist";
-import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, enrichVessel, searchArea, setRegionCollection, pullRegion, type AreaSearchResult } from "../lib/api";
+import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, type AreaSearchResult, type Anomaly } from "../lib/api";
 
 const REPORT_TYPES = ["Insurance Risk Advisory", "Weekly Maritime Intelligence", "Vessel Captain Advisory"];
 const CADENCE_OPTIONS = [
@@ -24,6 +26,28 @@ const ANOMALY_LABELS: Record<string, string> = {
   nav_speed_mismatch: "Nav/speed mismatch",
   loitering: "Loitering",
 };
+
+// Vessels involved in an anomaly — for single-vessel findings it's just the subject; for
+// colocation/STS/identity-conflict the evidence carries several MMSIs. Drives the per-vessel
+// snap / enrich / monitor actions in the detail view.
+type EventVessel = { mmsi: string | null; name: string | null };
+function anomalyVessels(a: Anomaly): EventVessel[] {
+  const out: EventVessel[] = [];
+  const seen = new Set<string>();
+  const add = (mmsi: string | null, name: string | null) => {
+    if (mmsi) { if (seen.has(mmsi)) return; seen.add(mmsi); }
+    else if (!name) return;
+    out.push({ mmsi, name });
+  };
+  if (a.mmsi) add(a.mmsi, a.name);
+  const d = a.details as Record<string, unknown> | null;
+  if (d) {
+    if (Array.isArray(d.mmsis)) for (const m of d.mmsis) add(String(m), null);
+    if (typeof d.mmsiA === "string") add(d.mmsiA, null);
+    if (typeof d.mmsiB === "string") add(d.mmsiB, null);
+  }
+  return out;
+}
 
 function cadenceLabel(min: number): string {
   return CADENCE_OPTIONS.find((o) => o.v === min)?.l ?? `${Math.round(min / 60)}h`;
@@ -118,10 +142,39 @@ export default function Workspace() {
   const gapList = gapsOn ? gaps.data?.gaps ?? null : null;
   const confirmedCount = gapList?.filter((g) => g.tier === "confirmed").length ?? 0;
 
+  // Imperative map fly-to (snap to a vessel chosen from a list). Bump the key each time.
+  const [flyTo, setFlyTo] = useState<FlyTo>(null);
+  const flyKeyRef = useRef(0);
+  const snapTo = (lng: number, lat: number, zoom?: number) => {
+    flyKeyRef.current += 1;
+    setFlyTo({ lng, lat, zoom, key: flyKeyRef.current });
+  };
+  // Snap to a vessel by its latest stored position; fall back to a given coordinate.
+  async function snapToVessel(mmsi: string | null, fallbackLat?: number | null, fallbackLon?: number | null) {
+    if (mmsi) {
+      try {
+        const r = await getLatestPosition(mmsi);
+        if (r.position) { snapTo(r.position.longitude, r.position.latitude, 11); return; }
+      } catch { /* fall through to fallback */ }
+    }
+    if (fallbackLat != null && fallbackLon != null) snapTo(fallbackLon, fallbackLat, 11);
+  }
+
+  // Cross-page snap: the Registry's "Show on map" navigates here with a fly target.
+  const location = useLocation();
+  useEffect(() => {
+    const st = location.state as { flyMmsi?: string; flyLat?: number; flyLon?: number } | null;
+    if (st && (st.flyMmsi || (st.flyLat != null && st.flyLon != null))) {
+      void snapToVessel(st.flyMmsi ?? null, st.flyLat ?? null, st.flyLon ?? null);
+      window.history.replaceState({}, ""); // consume so it doesn't refire on back/refresh
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.key]);
+
   // Vessel anomalies / pattern analysis (scanned server-side; always polled for the badge).
   const [selectedAnomalyId, setSelectedAnomalyId] = useState<string | null>(null);
   const [anomalyFilter, setAnomalyFilter] = useState<string | null>(null);
-  const anomalies = useQuery({ queryKey: ["anomalies"], queryFn: () => getAnomalies({ limit: 200 }), refetchInterval: 120000 });
+  const anomalies = useQuery({ queryKey: ["anomalies"], queryFn: () => getAnomalies(), refetchInterval: 120000 });
   const anomalyList = anomalies.data?.anomalies ?? [];
   const shownAnomalies = anomalyFilter ? anomalyList.filter((a) => a.severity === anomalyFilter) : anomalyList;
   const selectedAnomaly = anomalyList.find((a) => a.id === selectedAnomalyId) ?? null;
@@ -247,6 +300,7 @@ export default function Workspace() {
         pickMode={areaPickMode}
         onVesselClick={(v) => { setSelected([v]); setTool("vessels"); }}
         onBoxSelect={(vs) => { setSelected(vs); setTool("vessels"); }}
+        flyTo={flyTo}
       />
 
       {/* Tool tabs */}
@@ -350,12 +404,15 @@ export default function Workspace() {
                 </ul>
                 <div className="mt-2 space-y-1">
                   {selected.length === 1 && selected[0].mmsi && (
-                    <button
-                      onClick={() => setEnrichMmsi(selected[0].mmsi)}
-                      className="w-full rounded bg-sky-600 px-2 py-1 font-medium text-white hover:bg-sky-500"
-                    >
-                      Enrich (Data Docked)
-                    </button>
+                    <>
+                      <button
+                        onClick={() => setEnrichMmsi(selected[0].mmsi)}
+                        className="w-full rounded bg-sky-600 px-2 py-1 font-medium text-white hover:bg-sky-500"
+                      >
+                        Enrich (Data Docked)
+                      </button>
+                      <MonitorButton mmsi={selected[0].mmsi} name={selected[0].name} />
+                    </>
                   )}
                   <button onClick={() => hideVessels(selected)} className="w-full rounded bg-amber-600 px-2 py-1 font-medium text-black hover:bg-amber-500">
                     Remove from display
@@ -625,37 +682,74 @@ export default function Workspace() {
                 </div>
               )}
 
-              {selectedAnomaly.mmsi && (
-                <div className="mt-3 border-t border-white/10 pt-2">
-                  <button onClick={() => setEnrichMmsi(selectedAnomaly.mmsi)} className="w-full rounded bg-sky-600 px-2 py-1 text-[12px] font-medium text-white hover:bg-sky-500">
-                    Enrich vessel (Data Docked)
-                  </button>
-                  {enrichMmsi === selectedAnomaly.mmsi && (
-                    <div className="mt-2 rounded border border-sky-500/20 bg-sky-500/5 p-2 text-[11px]">
-                      {enrich.isLoading ? <p className="text-gray-400">Fetching particulars from Data Docked…</p>
-                        : enrich.data?.status === "error" || enrich.isError ? <p className="text-amber-400">Enrichment failed: {enrich.data?.error ?? (enrich.error as Error)?.message}</p>
-                        : enrich.data ? (
-                          <>
-                            <div className="mb-1 flex items-center justify-between">
-                              <span className="font-medium text-sky-300">Vessel particulars</span>
-                              {enrich.data.creditsSpent != null && <span className="text-[10px] text-gray-500">{enrich.data.creditsSpent} credit{enrich.data.creditsSpent === 1 ? "" : "s"}</span>}
-                            </div>
-                            {Object.keys(enrich.data.curated).length === 0 ? <p className="text-gray-500">No particulars returned.</p> : (
-                              <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5">
-                                {Object.entries(enrich.data.curated).map(([k, v]) => (
-                                  <div key={k} className="flex justify-between gap-2">
-                                    <dt className="text-gray-500">{k}</dt>
-                                    <dd className="truncate text-gray-200" title={String(v)}>{String(v)}</dd>
-                                  </div>
-                                ))}
-                              </dl>
-                            )}
-                          </>
-                        ) : null}
+              {(() => {
+                const involved = anomalyVessels(selectedAnomaly);
+                return (
+                  <div className="mt-3 border-t border-white/10 pt-2">
+                    <div className="mb-1 flex items-center justify-between">
+                      <span className="text-[10px] uppercase tracking-wide text-gray-500">
+                        Vessel{involved.length === 1 ? "" : "s"} involved{involved.length > 1 ? ` (${involved.length})` : ""}
+                      </span>
+                      {selectedAnomaly.latitude != null && (
+                        <button onClick={() => snapTo(selectedAnomaly.longitude!, selectedAnomaly.latitude!, 11)} className="text-[11px] text-sky-300 hover:underline">
+                          ⌖ Event location
+                        </button>
+                      )}
                     </div>
-                  )}
-                </div>
-              )}
+                    {involved.length === 0 ? (
+                      <p className="text-[11px] text-gray-500">No specific vessel attached to this finding.</p>
+                    ) : (
+                      <ul className="max-h-56 space-y-1 overflow-auto">
+                        {involved.map((v, i) => (
+                          <li key={(v.mmsi ?? "") + i} className="rounded border border-white/10 px-2 py-1.5">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="min-w-0 truncate text-[12px] text-gray-200">
+                                {v.name || v.mmsi || "unknown"}
+                                {v.mmsi && v.name ? <span className="text-gray-500"> · {v.mmsi}</span> : null}
+                              </span>
+                              <div className="flex shrink-0 items-center gap-1">
+                                <button onClick={() => void snapToVessel(v.mmsi, selectedAnomaly.latitude, selectedAnomaly.longitude)}
+                                  className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] hover:bg-white/10" title="Snap the map to this vessel">Map</button>
+                                {v.mmsi && (
+                                  <button onClick={() => setEnrichMmsi(v.mmsi)}
+                                    className="rounded border border-sky-500/40 bg-sky-500/10 px-1.5 py-0.5 text-[10px] text-sky-200 hover:bg-sky-500/20" title="Enrich (Data Docked)">Enrich</button>
+                                )}
+                              </div>
+                            </div>
+                            <div className="mt-1">
+                              <MonitorButton mmsi={v.mmsi} name={v.name} vesselType={selectedAnomaly.vesselType} lat={selectedAnomaly.latitude} lon={selectedAnomaly.longitude} compact />
+                            </div>
+                            {enrichMmsi === v.mmsi && v.mmsi && (
+                              <div className="mt-2 rounded border border-sky-500/20 bg-sky-500/5 p-2 text-[11px]">
+                                {enrich.isLoading ? <p className="text-gray-400">Fetching particulars from Data Docked…</p>
+                                  : enrich.data?.status === "error" || enrich.isError ? <p className="text-amber-400">Enrichment failed: {enrich.data?.error ?? (enrich.error as Error)?.message}</p>
+                                  : enrich.data ? (
+                                    <>
+                                      <div className="mb-1 flex items-center justify-between">
+                                        <span className="font-medium text-sky-300">Vessel particulars</span>
+                                        {enrich.data.creditsSpent != null && <span className="text-[10px] text-gray-500">{enrich.data.creditsSpent} credit{enrich.data.creditsSpent === 1 ? "" : "s"}</span>}
+                                      </div>
+                                      {Object.keys(enrich.data.curated).length === 0 ? <p className="text-gray-500">No particulars returned.</p> : (
+                                        <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5">
+                                          {Object.entries(enrich.data.curated).map(([k, val]) => (
+                                            <div key={k} className="flex justify-between gap-2">
+                                              <dt className="text-gray-500">{k}</dt>
+                                              <dd className="truncate text-gray-200" title={String(val)}>{String(val)}</dd>
+                                            </div>
+                                          ))}
+                                        </dl>
+                                      )}
+                                    </>
+                                  ) : null}
+                              </div>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           ) : (
             <>

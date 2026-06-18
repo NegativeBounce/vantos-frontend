@@ -4,6 +4,7 @@ import AppLayout from "./components/AppLayout";
 import Login from "./pages/Login";
 import Workspace from "./pages/Workspace";
 import ReportsPage from "./pages/ReportsPage";
+import RegistryPage from "./pages/RegistryPage";
 import SubscribersPage from "./pages/SubscribersPage";
 import AdminPage from "./pages/AdminPage";
 import SettingsPage from "./pages/SettingsPage";
@@ -25,6 +26,7 @@ export default function App() {
       <Route path="/login" element={isAuthed ? <Navigate to="/" replace /> : <Login />} />
       <Route element={<RequireAuth />}>
         <Route path="/" element={<Workspace />} />
+        <Route path="/registry" element={<RegistryPage />} />
         <Route path="/reports" element={<ReportsPage />} />
         <Route path="/subscribers" element={<SubscribersPage />} />
         <Route path="/admin" element={<AdminPage />} />

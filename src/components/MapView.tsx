@@ -11,6 +11,9 @@ export type PickedVessel = { mmsi: string | null; name: string | null };
 export type RegionPoly = { id: string; name: string; bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number } };
 export type Poi = { id: string; name: string; type: string; lng: number; lat: number };
 export type ViewportBbox = { minLat: number; minLon: number; maxLat: number; maxLon: number };
+// Imperative fly-to request: bump `key` to trigger an easeTo to (lng,lat). Used to snap
+// the map to a vessel chosen from a list (anomaly evidence, registry).
+export type FlyTo = { lng: number; lat: number; zoom?: number; key: number } | null;
 
 export type GnssCellView = {
   polygon: GeoJSON.Polygon;
@@ -177,6 +180,7 @@ export default function MapView({
   pickMode,
   onVesselClick,
   onBoxSelect,
+  flyTo,
 }: {
   vessels: VesselPosition[];
   selection: Selection;
@@ -195,6 +199,7 @@ export default function MapView({
   pickMode: boolean;
   onVesselClick: (v: PickedVessel) => void;
   onBoxSelect: (vessels: PickedVessel[]) => void;
+  flyTo?: FlyTo;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
@@ -208,6 +213,7 @@ export default function MapView({
   const boxModeRef = useRef(boxSelectMode);
   const pickModeRef = useRef(pickMode);
   const fittedRegionsRef = useRef<string>("");
+  const lastFlyKeyRef = useRef<number>(0);
   useEffect(() => { onMapClickRef.current = onMapClick; }, [onMapClick]);
   useEffect(() => { onVesselClickRef.current = onVesselClick; }, [onVesselClick]);
   useEffect(() => { onBoxSelectRef.current = onBoxSelect; }, [onBoxSelect]);
@@ -726,6 +732,17 @@ export default function MapView({
     if (!map) return;
     map.getCanvas().style.cursor = boxSelectMode || pickMode ? "crosshair" : "";
   }, [boxSelectMode, pickMode]);
+
+  // Snap to a vessel chosen from a list. Bumping flyTo.key re-triggers the ease.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !flyTo || flyTo.key === lastFlyKeyRef.current) return;
+    lastFlyKeyRef.current = flyTo.key;
+    fittedRef.current = true; // an explicit fly overrides the initial auto-fit-to-vessels
+    const go = () => map.easeTo({ center: [flyTo.lng, flyTo.lat], zoom: flyTo.zoom ?? Math.max(map.getZoom(), 9), duration: 800 });
+    if (map.isStyleLoaded()) go();
+    else map.once("load", go);
+  }, [flyTo]);
 
   return <div ref={containerRef} className="absolute inset-0" style={{ minHeight: "100%" }} />;
 }

@@ -260,11 +260,12 @@ export type AnomalyResult = {
   count: number;
   anomalies: Anomaly[];
 };
+// limit 0 (the default) = no cap; the operator sees every open finding.
 export const getAnomalies = (opts?: { type?: string; severity?: string; limit?: number }) => {
   const q = new URLSearchParams();
   if (opts?.type) q.set("type", opts.type);
   if (opts?.severity) q.set("severity", opts.severity);
-  q.set("limit", String(opts?.limit ?? 200));
+  q.set("limit", String(opts?.limit ?? 0));
   return apiGet<AnomalyResult>(`/api/anomalies?${q.toString()}`);
 };
 
@@ -292,3 +293,94 @@ export type AreaSearchResult = {
 };
 export const searchArea = (latitude: number, longitude: number, radiusKm: number) =>
   apiPost<AreaSearchResult>("/api/area/search", { latitude, longitude, radiusKm });
+
+// ---- Latest position (snap-to-map for a vessel from a list) ----
+export type LatestPosition = {
+  latitude: number;
+  longitude: number;
+  speed: number | null;
+  heading: number | null;
+  navStatus: string | null;
+  dataSource: string | null;
+  positionReceived: string | null;
+  ingestedAt: string | null;
+  name: string | null;
+  type: string | null;
+  imo: string | null;
+  flag: string | null;
+};
+export const getLatestPosition = (mmsi: string) =>
+  apiGet<{ status: string; mmsi: string; position: LatestPosition | null; error?: string }>(
+    `/api/vessels/${encodeURIComponent(mmsi)}/latest`
+  );
+
+// ---- Vessel Registry (monitored vessels + groups) ----
+export type MonitorGroup = {
+  id: string;
+  name: string;
+  description: string | null;
+  color: string | null;
+  createdAt: string;
+  vesselCount: number;
+};
+export type MonitoredVessel = {
+  id: string;
+  groupId: string | null;
+  groupName: string | null;
+  mmsi: string | null;
+  imo: string | null;
+  name: string | null;
+  vesselType: string | null;
+  flag: string | null;
+  notes: string | null;
+  lastLatitude: number | null;
+  lastLongitude: number | null;
+  addedAt: string;
+  updatedAt: string;
+};
+
+export const getMonitorGroups = () => apiGet<{ status: string; groups: MonitorGroup[] }>("/api/registry/groups");
+export const createMonitorGroup = (input: { name: string; description?: string; color?: string }) =>
+  apiPost<{ status: string; group?: MonitorGroup; error?: string }>("/api/registry/groups", input);
+
+export async function updateMonitorGroup(id: string, input: { name?: string; description?: string | null; color?: string | null }) {
+  const res = await authedFetch(`/api/registry/groups/${id}`, {
+    method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(input),
+  });
+  const data = (await res.json().catch(() => ({}))) as { status: string; group?: MonitorGroup; error?: string };
+  if (!res.ok) throw new Error(data?.error || `${res.status} ${res.statusText}`);
+  return data;
+}
+export async function deleteMonitorGroup(id: string) {
+  const res = await authedFetch(`/api/registry/groups/${id}`, { method: "DELETE" });
+  const data = (await res.json().catch(() => ({}))) as { status: string; error?: string };
+  if (!res.ok) throw new Error(data?.error || `${res.status} ${res.statusText}`);
+  return data;
+}
+
+export const getMonitoredVessels = (opts?: { groupId?: string; unassigned?: boolean }) => {
+  const q = new URLSearchParams();
+  if (opts?.groupId) q.set("groupId", opts.groupId);
+  if (opts?.unassigned) q.set("unassigned", "1");
+  return apiGet<{ status: string; vessels: MonitoredVessel[] }>(`/api/registry/vessels?${q.toString()}`);
+};
+export const addMonitoredVessel = (input: {
+  mmsi?: string | null; imo?: string | null; name?: string | null; vesselType?: string | null;
+  flag?: string | null; groupId?: string | null; notes?: string | null;
+  lastLatitude?: number | null; lastLongitude?: number | null;
+}) => apiPost<{ status: string; vessel?: MonitoredVessel; error?: string }>("/api/registry/vessels", input);
+
+export async function updateMonitoredVessel(id: string, input: { groupId?: string | null; notes?: string | null }) {
+  const res = await authedFetch(`/api/registry/vessels/${id}`, {
+    method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(input),
+  });
+  const data = (await res.json().catch(() => ({}))) as { status: string; vessel?: MonitoredVessel; error?: string };
+  if (!res.ok) throw new Error(data?.error || `${res.status} ${res.statusText}`);
+  return data;
+}
+export async function removeMonitoredVessel(id: string) {
+  const res = await authedFetch(`/api/registry/vessels/${id}`, { method: "DELETE" });
+  const data = (await res.json().catch(() => ({}))) as { status: string; error?: string };
+  if (!res.ok) throw new Error(data?.error || `${res.status} ${res.statusText}`);
+  return data;
+}
