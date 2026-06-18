@@ -8,7 +8,13 @@ const EMPTY: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: 
 
 export type Selection = { lng: number; lat: number; radiusKm: number } | null;
 export type PickedVessel = { mmsi: string | null; name: string | null };
-export type RegionPoly = { id: string; name: string; bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number } };
+export type RegionPoly = {
+  id: string;
+  name: string;
+  bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number };
+  polygon?: number[][] | null; // custom regions: exact outer ring [[lng,lat], ...]
+  color?: string | null;       // custom overlay colour (hex); null → default green
+};
 export type Poi = { id: string; name: string; type: string; lng: number; lat: number };
 export type ViewportBbox = { minLat: number; minLon: number; maxLat: number; maxLon: number };
 // Imperative fly-to request: bump `key` to trigger an easeTo to (lng,lat). Used to snap
@@ -90,23 +96,46 @@ function trackData(track: [number, number][] | null): GeoJSON.FeatureCollection 
   return { type: "FeatureCollection", features };
 }
 
+const DEFAULT_REGION_COLOR = "#22c55e";
+
 function regionsData(regions: RegionPoly[] | null, selectedIds: string[]): GeoJSON.FeatureCollection {
   if (!regions || !regions.length) return EMPTY;
   const sel = new Set(selectedIds);
   return {
     type: "FeatureCollection",
     features: regions.map((p) => {
-      const { minLat, minLon, maxLat, maxLon } = p.bbox;
-      const ring: [number, number][] = [
-        [minLon, minLat], [maxLon, minLat], [maxLon, maxLat], [minLon, maxLat], [minLon, minLat],
-      ];
+      // Custom regions render their exact drawn polygon; baseline regions render the bbox rect.
+      let ring: [number, number][];
+      if (p.polygon && p.polygon.length >= 3) {
+        ring = p.polygon.map((c) => [c[0], c[1]] as [number, number]);
+        const first = ring[0], last = ring[ring.length - 1];
+        if (first[0] !== last[0] || first[1] !== last[1]) ring.push(first); // close the ring
+      } else {
+        const { minLat, minLon, maxLat, maxLon } = p.bbox;
+        ring = [[minLon, minLat], [maxLon, minLat], [maxLon, maxLat], [minLon, maxLat], [minLon, minLat]];
+      }
       return {
         type: "Feature",
-        properties: { rid: p.id, name: p.name, selected: sel.has(p.id) },
+        properties: { rid: p.id, name: p.name, selected: sel.has(p.id), color: p.color || DEFAULT_REGION_COLOR },
         geometry: { type: "Polygon", coordinates: [ring] },
       };
     }),
   };
+}
+
+// In-progress drawn polygon (custom region): a line through the vertices, a fill once
+// there are ≥3, and a dot per vertex.
+function drawData(verts: [number, number][] | null): GeoJSON.FeatureCollection {
+  if (!verts || !verts.length) return EMPTY;
+  const features: GeoJSON.Feature[] = [];
+  if (verts.length >= 3) {
+    features.push({ type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [[...verts, verts[0]]] } });
+  }
+  if (verts.length >= 2) {
+    features.push({ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: verts } });
+  }
+  verts.forEach((v, i) => features.push({ type: "Feature", properties: { idx: i }, geometry: { type: "Point", coordinates: v } }));
+  return { type: "FeatureCollection", features };
 }
 
 function poisData(pois: Poi[] | null): GeoJSON.FeatureCollection {
@@ -181,6 +210,9 @@ export default function MapView({
   onVesselClick,
   onBoxSelect,
   flyTo,
+  drawMode = false,
+  drawVertices = null,
+  onDrawPoint,
 }: {
   vessels: VesselPosition[];
   selection: Selection;
@@ -200,6 +232,9 @@ export default function MapView({
   onVesselClick: (v: PickedVessel) => void;
   onBoxSelect: (vessels: PickedVessel[]) => void;
   flyTo?: FlyTo;
+  drawMode?: boolean;
+  drawVertices?: [number, number][] | null;
+  onDrawPoint?: (lng: number, lat: number) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
@@ -212,6 +247,8 @@ export default function MapView({
   const onRegionClickRef = useRef(onRegionClick);
   const boxModeRef = useRef(boxSelectMode);
   const pickModeRef = useRef(pickMode);
+  const drawModeRef = useRef(drawMode);
+  const onDrawPointRef = useRef(onDrawPoint);
   const fittedRegionsRef = useRef<string>("");
   const lastFlyKeyRef = useRef<number>(0);
   useEffect(() => { onMapClickRef.current = onMapClick; }, [onMapClick]);
@@ -222,6 +259,8 @@ export default function MapView({
   useEffect(() => { onRegionClickRef.current = onRegionClick; }, [onRegionClick]);
   useEffect(() => { boxModeRef.current = boxSelectMode; }, [boxSelectMode]);
   useEffect(() => { pickModeRef.current = pickMode; }, [pickMode]);
+  useEffect(() => { drawModeRef.current = drawMode; }, [drawMode]);
+  useEffect(() => { onDrawPointRef.current = onDrawPoint; }, [onDrawPoint]);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -272,7 +311,7 @@ export default function MapView({
         type: "fill",
         source: "regions",
         paint: {
-          "fill-color": "#22c55e",
+          "fill-color": ["coalesce", ["get", "color"], "#22c55e"],
           "fill-opacity": [
             "case",
             ["get", "selected"], 0.14,
@@ -286,7 +325,7 @@ export default function MapView({
         type: "line",
         source: "regions",
         paint: {
-          "line-color": "#22c55e",
+          "line-color": ["coalesce", ["get", "color"], "#22c55e"],
           "line-dasharray": [2, 2],
           "line-opacity": 0.9,
           "line-width": [
@@ -335,7 +374,7 @@ export default function MapView({
         map.getCanvas().style.cursor = boxModeRef.current || pickModeRef.current ? "crosshair" : "";
       });
       map.on("click", "regions-fill", (e) => {
-        if (pickModeRef.current || boxModeRef.current) return;
+        if (pickModeRef.current || boxModeRef.current || drawModeRef.current) return;
         // Let a more specific feature own the click if one is here.
         const hit = map.queryRenderedFeatures(e.point, { layers: ["clusters", "vessels-circle", "gaps-dot", "gnss-fill", "pois-dot"] });
         if (hit.length) return;
@@ -361,6 +400,7 @@ export default function MapView({
       });
       const gnssPopup = new mapboxgl.Popup({ closeButton: false, offset: 8, className: "vantos-popup" });
       map.on("click", "gnss-fill", (e) => {
+        if (drawModeRef.current) return;
         const f = e.features?.[0];
         if (!f) return;
         const p = f.properties as { region?: string; severityPct?: number; severityColor?: string; confidence?: string; distinctAircraft?: number; dropEvents?: number };
@@ -475,6 +515,7 @@ export default function MapView({
       });
       const gapPopup = new mapboxgl.Popup({ closeButton: false, offset: 12, className: "vantos-popup" });
       map.on("click", "gaps-dot", (e) => {
+        if (drawModeRef.current) return;
         const f = e.features?.[0];
         if (!f) return;
         const p = f.properties as { mmsi?: string; name?: string; confidence?: string; minutesAgo?: number; tier?: string };
@@ -517,7 +558,7 @@ export default function MapView({
         paint: { "text-color": "#cbd5e1", "text-halo-color": "#0b0f14", "text-halo-width": 1.2 },
       });
       map.on("click", "pois-dot", (e) => {
-        if (boxModeRef.current) return;
+        if (boxModeRef.current || drawModeRef.current) return;
         const f = e.features?.[0];
         if (!f) return;
         const p = f.properties as { id?: string; name?: string; type?: string };
@@ -529,6 +570,7 @@ export default function MapView({
 
       // Click a cluster → zoom in.
       map.on("click", "clusters", (e) => {
+        if (drawModeRef.current) return;
         const f = map.queryRenderedFeatures(e.point, { layers: ["clusters"] })[0];
         if (!f) return;
         const clusterId = (f.properties as { cluster_id: number }).cluster_id;
@@ -539,7 +581,7 @@ export default function MapView({
       });
       // Click a single vessel → select.
       map.on("click", "vessels-circle", (e) => {
-        if (boxModeRef.current) return;
+        if (boxModeRef.current || drawModeRef.current) return;
         const f = e.features?.[0];
         if (!f) return;
         const p = f.properties as { mmsi?: string; name?: string };
@@ -549,8 +591,28 @@ export default function MapView({
         map.on("mouseenter", lyr, () => (map.getCanvas().style.cursor = "pointer"));
         map.on("mouseleave", lyr, () => (map.getCanvas().style.cursor = boxModeRef.current || pickModeRef.current ? "crosshair" : ""));
       }
-      // Click empty map → drop a search center.
+      // In-progress custom-region polygon (drawn vertices live in Workspace state).
+      map.addSource("draw", { type: "geojson", data: EMPTY });
+      map.addLayer({
+        id: "draw-fill", type: "fill", source: "draw",
+        filter: ["==", ["geometry-type"], "Polygon"],
+        paint: { "fill-color": "#38bdf8", "fill-opacity": 0.15 },
+      });
+      map.addLayer({
+        id: "draw-line", type: "line", source: "draw",
+        filter: ["==", ["geometry-type"], "LineString"],
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": "#38bdf8", "line-width": 2 },
+      });
+      map.addLayer({
+        id: "draw-verts", type: "circle", source: "draw",
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: { "circle-radius": 4, "circle-color": "#0b0f14", "circle-stroke-color": "#38bdf8", "circle-stroke-width": 2 },
+      });
+
+      // Click empty map → in draw mode add a polygon vertex; otherwise drop a search center.
       map.on("click", (e) => {
+        if (drawModeRef.current) { onDrawPointRef.current?.(e.lngLat.lng, e.lngLat.lat); return; }
         if (boxModeRef.current) return;
         const hit = map.queryRenderedFeatures(e.point, { layers: ["clusters", "vessels-circle"] });
         if (hit.length) return;
@@ -730,8 +792,19 @@ export default function MapView({
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    map.getCanvas().style.cursor = boxSelectMode || pickMode ? "crosshair" : "";
-  }, [boxSelectMode, pickMode]);
+    const apply = () => {
+      const src = map.getSource("draw") as mapboxgl.GeoJSONSource | undefined;
+      if (src) src.setData(drawData(drawVertices));
+    };
+    if (map.getSource("draw")) apply();
+    else map.once("load", apply);
+  }, [drawVertices]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    map.getCanvas().style.cursor = boxSelectMode || pickMode || drawMode ? "crosshair" : "";
+  }, [boxSelectMode, pickMode, drawMode]);
 
   // Snap to a vessel chosen from a list. Bumping flyTo.key re-triggers the ease.
   useEffect(() => {

@@ -87,10 +87,24 @@ export type Region = {
   collectAisSatellite: boolean;
   boundingBox: { minLat: number; minLon: number; maxLat: number; maxLon: number } | null;
   center: { lat: number; lon: number } | null;
+  polygon: number[][] | null;
+  color: string | null;
+  isCustom: boolean;
   lastAisPullAt: string | null;
   aisPullCadenceMinutes: number;
 };
 export const getRegions = () => apiGet<{ status: string; regions: Region[] }>("/api/regions");
+
+// Create a custom, operator-drawn coverage region from a polygon ring ([[lng,lat], ...]).
+export const createRegion = (input: { name: string; description?: string; color?: string; polygon: number[][]; collectAis?: boolean }) =>
+  apiPost<{ status: string; region?: Region; error?: string }>("/api/regions", input);
+
+export async function deleteRegion(id: string): Promise<{ status: string; error?: string }> {
+  const res = await authedFetch(`/api/regions/${id}`, { method: "DELETE" });
+  const data = (await res.json().catch(() => ({}))) as { status: string; error?: string };
+  if (!res.ok) throw new Error(data?.error || `${res.status} ${res.statusText}`);
+  return data;
+}
 
 export async function setRegionCollection(
   id: string,

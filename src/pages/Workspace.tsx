@@ -5,7 +5,10 @@ import MapView, { type PickedVessel, type ViewportBbox, type FlyTo } from "../co
 import Modal from "../components/Modal";
 import MonitorButton from "../components/MonitorButton";
 import { usePersistentState } from "../lib/persist";
-import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, type AreaSearchResult, type Anomaly } from "../lib/api";
+import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, createRegion, deleteRegion, type AreaSearchResult, type Anomaly } from "../lib/api";
+
+// Overlay-colour palette for custom regions (default first = the baseline green).
+const REGION_PALETTE = ["#22c55e", "#38bdf8", "#f59e0b", "#ef4444", "#a855f7", "#eab308", "#ec4899", "#14b8a6"];
 
 const REPORT_TYPES = ["Insurance Risk Advisory", "Weekly Maritime Intelligence", "Vessel Captain Advisory"];
 const CADENCE_OPTIONS = [
@@ -85,6 +88,60 @@ export default function Workspace() {
   // Transient interaction/operation state — intentionally NOT persisted.
   const [areaPickMode, setAreaPickMode] = useState(false);
   const [pullState, setPullState] = useState<Record<string, string>>({});
+
+  // Custom-region drawing (transient): click to add vertices → name + colour → save.
+  const [drawMode, setDrawMode] = useState(false);
+  const [drawForm, setDrawForm] = useState(false); // finished drawing → naming/colour step
+  const [drawVerts, setDrawVerts] = useState<[number, number][]>([]);
+  const [newRegionName, setNewRegionName] = useState("");
+  const [newRegionColor, setNewRegionColor] = useState(REGION_PALETTE[0]);
+  const [savingRegion, setSavingRegion] = useState(false);
+  const [drawErr, setDrawErr] = useState<string | null>(null);
+
+  function startDrawRegion() {
+    setBoxMode(false);
+    setAreaPickMode(false);
+    setTool(null);
+    setDrawVerts([]);
+    setDrawForm(false);
+    setDrawErr(null);
+    setNewRegionName("");
+    setNewRegionColor(REGION_PALETTE[0]);
+    setDrawMode(true);
+  }
+  function cancelDrawRegion() {
+    setDrawMode(false);
+    setDrawForm(false);
+    setDrawVerts([]);
+    setDrawErr(null);
+  }
+  async function saveCustomRegion() {
+    if (drawVerts.length < 3 || !newRegionName.trim()) return;
+    setSavingRegion(true);
+    setDrawErr(null);
+    try {
+      const res = await createRegion({ name: newRegionName.trim(), color: newRegionColor, polygon: drawVerts });
+      if (res.status !== "ok" || !res.region) throw new Error(res.error || "could not save region");
+      await qc.invalidateQueries({ queryKey: ["regions"] });
+      setSelectedRegionIds((prev) => [...prev, res.region!.id]); // show it immediately
+      cancelDrawRegion();
+    } catch (e) {
+      setDrawErr((e as Error).message);
+    } finally {
+      setSavingRegion(false);
+    }
+  }
+  async function doDeleteRegion(id: string, name: string) {
+    if (!confirm(`Delete custom region "${name}"? Its collected positions are kept but lose the region tag.`)) return;
+    try {
+      await deleteRegion(id);
+      setSelectedRegionIds((prev) => prev.filter((x) => x !== id));
+      setRegionModalId(null);
+      await qc.invalidateQueries({ queryKey: ["regions"] });
+    } catch (e) {
+      setPullState((s) => ({ ...s, [id]: `error: ${(e as Error).message}` }));
+    }
+  }
 
   // Track for the single selected vessel (only when the Tracks layer is on).
   const trackMmsi = selected.length === 1 ? selected[0].mmsi : null;
@@ -210,7 +267,7 @@ export default function Workspace() {
   // All coverage regions with a bbox → interactive polygons on the map (hover/click);
   // selected ones render green (styling handled in MapView via selectedRegionIds).
   const regionShapes = useMemo(
-    () => coverageRegions.filter((r) => r.boundingBox).map((r) => ({ id: r.id, name: r.name, bbox: r.boundingBox! })),
+    () => coverageRegions.filter((r) => r.boundingBox).map((r) => ({ id: r.id, name: r.name, bbox: r.boundingBox!, polygon: r.polygon, color: r.color })),
     [coverageRegions]
   );
   // Region options modal opened by clicking a region on the map.
@@ -301,6 +358,9 @@ export default function Workspace() {
         onVesselClick={(v) => { setSelected([v]); setTool("vessels"); }}
         onBoxSelect={(vs) => { setSelected(vs); setTool("vessels"); }}
         flyTo={flyTo}
+        drawMode={drawMode}
+        drawVertices={drawMode || drawForm ? drawVerts : null}
+        onDrawPoint={(lng, lat) => setDrawVerts((v) => [...v, [lng, lat] as [number, number]])}
       />
 
       {/* Tool tabs */}
@@ -316,6 +376,48 @@ export default function Workspace() {
           </button>
         ))}
       </div>
+
+      {/* Custom-region draw panel (floating) */}
+      {(drawMode || drawForm) && (
+        <div className="absolute bottom-4 left-1/2 z-30 w-80 -translate-x-1/2 rounded-lg border border-sky-500/30 bg-black/80 p-3 text-xs backdrop-blur">
+          {!drawForm ? (
+            <>
+              <div className="font-medium text-sky-300">Draw a custom region</div>
+              <p className="mt-1 text-gray-400">Click the map to add points ({drawVerts.length}). Add at least 3, then Finish.</p>
+              <div className="mt-2 flex gap-1.5">
+                <button onClick={() => setDrawVerts((v) => v.slice(0, -1))} disabled={!drawVerts.length}
+                  className="rounded border border-white/10 px-2 py-1 hover:bg-white/10 disabled:opacity-40">Undo</button>
+                <button onClick={() => { setDrawMode(false); setDrawForm(true); }} disabled={drawVerts.length < 3}
+                  className="rounded bg-sky-600 px-2 py-1 font-medium text-white hover:bg-sky-500 disabled:opacity-40">Finish ({drawVerts.length})</button>
+                <button onClick={cancelDrawRegion} className="ml-auto rounded border border-white/10 px-2 py-1 hover:bg-white/10">Cancel</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="font-medium text-sky-300">Name &amp; colour</div>
+              <input value={newRegionName} onChange={(e) => setNewRegionName(e.target.value)} autoFocus placeholder="Region name"
+                className="mt-2 w-full rounded bg-black/30 px-2 py-1 ring-1 ring-white/10 placeholder:text-gray-600" />
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                {REGION_PALETTE.map((c) => (
+                  <button key={c} onClick={() => setNewRegionColor(c)} title={c}
+                    className={`h-6 w-6 rounded ${newRegionColor === c ? "ring-2 ring-white" : "ring-1 ring-white/20"}`}
+                    style={{ backgroundColor: c }} />
+                ))}
+                <input type="color" value={newRegionColor} onChange={(e) => setNewRegionColor(e.target.value)}
+                  className="h-6 w-8 cursor-pointer rounded bg-transparent" title="Custom colour" />
+              </div>
+              <p className="mt-2 text-[10px] text-gray-500">Collection runs over the region's bounding box (AISStream uses rectangles); the map shows your exact shape. Turn on AIS / layers in the Regions tab once saved.</p>
+              {drawErr && <p className="mt-1 text-amber-400">{drawErr}</p>}
+              <div className="mt-2 flex gap-1.5">
+                <button onClick={() => { setDrawForm(false); setDrawMode(true); }} className="rounded border border-white/10 px-2 py-1 hover:bg-white/10">← Edit points</button>
+                <button onClick={saveCustomRegion} disabled={savingRegion || !newRegionName.trim()}
+                  className="rounded bg-emerald-600 px-2 py-1 font-medium text-white hover:bg-emerald-500 disabled:opacity-50">{savingRegion ? "Saving…" : "Save region"}</button>
+                <button onClick={cancelDrawRegion} className="ml-auto rounded border border-white/10 px-2 py-1 hover:bg-white/10">Cancel</button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {tool === "layers" && (
         <Modal title="Layers" onClose={() => setTool(null)}>
@@ -504,6 +606,10 @@ export default function Workspace() {
               </button>
             )}
           </div>
+          <button onClick={startDrawRegion} className="mb-2 w-full rounded border border-sky-500/40 bg-sky-500/10 px-2 py-1.5 text-[12px] text-sky-200 hover:bg-sky-500/20">
+            + Add custom region <span className="text-[10px] text-sky-300/70">(draw on the map)</span>
+          </button>
+          <p className="mb-2 text-[10px] text-gray-600">Fill gaps in the baseline regions — draw a port, waterway or coastal area; it then behaves like any region (collect, layers, cadence).</p>
           <div className="max-h-72 space-y-1.5 overflow-auto">
             {coverageRegions.map((r) => {
               const sel = selectedRegionIds.includes(r.id);
@@ -527,6 +633,10 @@ export default function Workspace() {
                     >
                       {pulling ? "Pulling…" : "Pull now"}
                     </button>
+                    {r.isCustom && (
+                      <button onClick={() => doDeleteRegion(r.id, r.name)} title="Delete custom region"
+                        className="shrink-0 rounded border border-red-500/30 px-1.5 py-1 text-[11px] text-red-300 hover:bg-red-500/10">✕</button>
+                    )}
                   </div>
                   <div className="mt-1.5 flex items-center justify-between">
                     <span className="text-[10px] text-gray-600">{ps === "done" ? "snapshot done" : ps?.startsWith("error") ? ps : pulling ? "snapshot started (~3 min)" : ""}</span>
@@ -842,6 +952,12 @@ export default function Workspace() {
               <span className="text-[10px] text-gray-600">{ps === "done" ? "snapshot done" : ps?.startsWith("error") ? ps : pulling ? "snapshot started (~3 min)" : ""}</span>
             </div>
             <p className="mt-2 text-[10px] text-gray-600">Same options as the Regions tab. Nothing collects until enabled.</p>
+            {r.isCustom && (
+              <button onClick={() => doDeleteRegion(r.id, r.name)}
+                className="mt-2 rounded border border-red-500/30 px-2 py-1 text-[11px] text-red-300 hover:bg-red-500/10">
+                Delete custom region
+              </button>
+            )}
           </Modal>
         );
       })()}
