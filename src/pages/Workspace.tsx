@@ -380,7 +380,6 @@ export default function Workspace() {
   const anomalyList = viewingSnapshotId ? viewingSnapshot.data?.snapshot.findings ?? [] : liveAnomalies;
   const shownAnomalies = anomalyFilter ? anomalyList.filter((a) => a.severity === anomalyFilter) : anomalyList;
   const selectedAnomaly = anomalyList.find((a) => a.id === selectedAnomalyId) ?? null;
-  const analyzingRegions = useMemo(() => coverageRegions.filter((r) => r.analyze), [coverageRegions]);
 
   async function withAnalysisBusy(key: string, fn: () => Promise<void>, okMsg?: string) {
     setAnalysisBusy(key);
@@ -450,6 +449,7 @@ export default function Workspace() {
   const allRegions = regions.data?.regions ?? [];
   const activeRegions = useMemo(() => allRegions.filter((r) => r.status === "active"), [allRegions]);
   const coverageRegions = useMemo(() => activeRegions.filter((r) => r.kind !== "poi"), [activeRegions]);
+  const analyzingRegions = useMemo(() => coverageRegions.filter((r) => r.analyze), [coverageRegions]);
   const poiRegions = useMemo(() => activeRegions.filter((r) => r.kind === "poi"), [activeRegions]);
   const regionCount = coverageRegions.length;
 
