@@ -139,7 +139,7 @@ export type VesselPosition = {
   ingestedAt: string | null;
 };
 export type Bbox = { minLat: number; minLon: number; maxLat: number; maxLon: number };
-export const getPositions = (bbox?: Bbox | null) => {
+export const getPositions = (bbox?: Bbox | null, showRegionIds?: string[]) => {
   const q = new URLSearchParams({ limit: "20000" });
   if (bbox) {
     q.set("minLat", String(bbox.minLat));
@@ -147,6 +147,7 @@ export const getPositions = (bbox?: Bbox | null) => {
     q.set("maxLat", String(bbox.maxLat));
     q.set("maxLon", String(bbox.maxLon));
   }
+  if (showRegionIds && showRegionIds.length) q.set("showRegionIds", showRegionIds.join(","));
   return apiGet<{ status: string; count: number; truncated: boolean; vessels: VesselPosition[] }>(`/api/positions?${q.toString()}`);
 };
 

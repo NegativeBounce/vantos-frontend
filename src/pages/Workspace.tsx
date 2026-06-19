@@ -206,7 +206,6 @@ export default function Workspace() {
   // Viewport-based loading: fetch only vessels in the current map view (refetch on pan/zoom).
   const [viewport, setViewport] = useState<ViewportBbox | null>(null);
   const viewportKey = viewport ? `${viewport.minLat},${viewport.minLon},${viewport.maxLat},${viewport.maxLon}` : "global";
-  const positions = useQuery({ queryKey: ["positions", viewportKey], queryFn: () => getPositions(viewport), refetchInterval: 20000 });
 
   // Durable UI state — persisted across tab/route changes and reload (see lib/persist).
   const [tool, setTool] = usePersistentState<Tool | null>("tool", null);
@@ -218,6 +217,9 @@ export default function Workspace() {
   const [clearedAt, setClearedAt] = usePersistentState<number | null>("clearedAt", null);
   const [selected, setSelected] = usePersistentState<PickedVessel[]>("selected", []);
   const [selectedRegionIds, setSelectedRegionIds] = usePersistentState<string[]>("selectedRegionIds", []);
+  // Vessel positions for the current viewport. Regions you've "shown on map" (selected)
+  // also display their stored HISTORIC positions even when collection is off.
+  const positions = useQuery({ queryKey: ["positions", viewportKey, selectedRegionIds], queryFn: () => getPositions(viewport, selectedRegionIds), refetchInterval: 20000 });
 
   // Transient interaction/operation state — intentionally NOT persisted.
   const [areaPickMode, setAreaPickMode] = useState(false);
@@ -884,7 +886,7 @@ export default function Workspace() {
       {tool === "regions" && (
         <Modal title="Regions" onClose={() => setTool(null)} width="w-[30rem]">
           <div className="mb-2 flex items-center justify-between">
-            <p className="text-[11px] text-gray-500">Click a name to highlight it on the map; toggle AIS to collect.</p>
+            <p className="text-[11px] text-gray-500">Click a name to show it on the map (outline + its stored positions, incl. historic); toggle AIS to collect.</p>
             {selectedRegionIds.length > 0 && (
               <button onClick={() => setSelectedRegionIds([])} className="rounded border border-white/10 px-2 py-0.5 text-[10px] hover:bg-white/10">
                 Clear ({selectedRegionIds.length})
@@ -1386,7 +1388,7 @@ export default function Workspace() {
 
             <label className="mt-3 flex items-center gap-2 text-gray-300">
               <input type="checkbox" checked={sel} onChange={() => toggleRegionSelect(r.id)} />
-              Show on map <span className="text-[10px] text-gray-500">(green outline)</span>
+              Show on map <span className="text-[10px] text-gray-500">(outline + stored positions — view historic with collection off)</span>
             </label>
             <label className="mt-2 flex items-center gap-2 text-gray-300">
               <input type="checkbox" checked={footprintRegionId === r.id} onChange={(e) => setFootprintRegionId(e.target.checked ? r.id : null)} />
