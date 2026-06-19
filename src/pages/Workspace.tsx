@@ -14,6 +14,7 @@ const REGION_PALETTE = ["#22c55e", "#38bdf8", "#f59e0b", "#ef4444", "#a855f7", "
 // Each tile is a Data Docked get-vessels-by-area call ≈ 10 credits.
 const SAT_TILE_STEP_KM = 70;
 const SAT_TILE_MAX = 24; // mirror backend SAT_TILE_MAX_TILES — region auto-tiles up to this
+const SAT_CREDITS_PER_TILE = 10;
 type Bbox = { minLat: number; minLon: number; maxLat: number; maxLon: number };
 function satGrid(bbox: Bbox): { rows: number; cols: number } {
   const midLat = (bbox.minLat + bbox.maxLat) / 2;
