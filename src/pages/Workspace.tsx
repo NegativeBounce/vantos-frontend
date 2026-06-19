@@ -5,10 +5,26 @@ import MapView, { type PickedVessel, type ViewportBbox, type FlyTo } from "../co
 import Modal from "../components/Modal";
 import MonitorButton from "../components/MonitorButton";
 import { usePersistentState } from "../lib/persist";
-import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, createRegion, deleteRegion, type AreaSearchResult, type Anomaly } from "../lib/api";
+import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, createRegion, deleteRegion, type AreaSearchResult, type Anomaly, type Region } from "../lib/api";
 
 // Overlay-colour palette for custom regions (default first = the baseline green).
 const REGION_PALETTE = ["#22c55e", "#38bdf8", "#f59e0b", "#ef4444", "#a855f7", "#eab308", "#ec4899", "#14b8a6"];
+
+// Satellite tiling estimate (mirrors backend defaults: 50km radius, 70km step, max 12 tiles).
+// Each tile is a Data Docked get-vessels-by-area call ≈ 10 credits.
+const SAT_TILE_STEP_KM = 70;
+const SAT_TILE_MAX = 12;
+const SAT_CREDITS_PER_TILE = 10;
+type Bbox = { minLat: number; minLon: number; maxLat: number; maxLon: number };
+function estimateSatTiles(bbox: Bbox): { tiles: number; total: number; capped: boolean } {
+  const midLat = (bbox.minLat + bbox.maxLat) / 2;
+  const latSpanKm = Math.abs(bbox.maxLat - bbox.minLat) * 111;
+  const lonSpanKm = Math.abs(bbox.maxLon - bbox.minLon) * 111 * Math.cos((midLat * Math.PI) / 180);
+  const rows = Math.max(1, Math.ceil(latSpanKm / SAT_TILE_STEP_KM));
+  const cols = Math.max(1, Math.ceil(lonSpanKm / SAT_TILE_STEP_KM));
+  const total = rows * cols;
+  return { tiles: Math.min(total, SAT_TILE_MAX), total, capped: total > SAT_TILE_MAX };
+}
 
 const REPORT_TYPES = ["Insurance Risk Advisory", "Weekly Maritime Intelligence", "Vessel Captain Advisory"];
 const CADENCE_OPTIONS = [
@@ -131,6 +147,25 @@ export default function Workspace() {
       setSavingRegion(false);
     }
   }
+  // Enable/disable the Data Docked satellite supplement, with a credit-cost confirm on
+  // enable (tiled coverage means a large region can spend many credits per pull).
+  async function setSat(r: Region, checked: boolean) {
+    if (checked && r.boundingBox) {
+      const est = estimateSatTiles(r.boundingBox);
+      if (est.total > 1) {
+        const credits = est.tiles * SAT_CREDITS_PER_TILE;
+        const msg =
+          `Satellite (Data Docked) for "${r.name}" will pull ~${est.tiles} tile${est.tiles === 1 ? "" : "s"} ` +
+          `≈ ${credits} credits per pull (and again on its cadence).` +
+          (est.capped ? ` This region is large — only ${est.tiles} of ${est.total} tiles are covered; draw a smaller region (or raise SAT_TILE_MAX) for full coverage.` : "") +
+          `\n\nEnable satellite collection?`;
+        if (!confirm(msg)) return;
+      }
+    }
+    await setRegionCollection(r.id, { collectAisSatellite: checked });
+    qc.invalidateQueries({ queryKey: ["regions"] });
+  }
+
   async function doDeleteRegion(id: string, name: string) {
     if (!confirm(`Delete custom region "${name}"? Its collected positions are kept but lose the region tag.`)) return;
     try {
@@ -655,7 +690,7 @@ export default function Workspace() {
                           type="checkbox"
                           checked={r.collectAisSatellite}
                           disabled={!r.boundingBox}
-                          onChange={async (e) => { await setRegionCollection(r.id, { collectAisSatellite: e.target.checked }); qc.invalidateQueries({ queryKey: ["regions"] }); }}
+                          onChange={(e) => setSat(r, e.target.checked)}
                         />
                         Sat
                       </label>
@@ -921,9 +956,17 @@ export default function Workspace() {
               </label>
               <label className={`flex items-center gap-2 ${r.boundingBox ? "text-gray-300" : "text-gray-600"}`}>
                 <input type="checkbox" checked={r.collectAisSatellite} disabled={!r.boundingBox}
-                  onChange={async (e) => { await setRegionCollection(r.id, { collectAisSatellite: e.target.checked }); qc.invalidateQueries({ queryKey: ["regions"] }); }} />
+                  onChange={(e) => setSat(r, e.target.checked)} />
                 Sat <span className="text-[10px] text-gray-500">— Data Docked satellite supplement (credits)</span>
               </label>
+              {r.boundingBox && (() => {
+                const est = estimateSatTiles(r.boundingBox!);
+                return (
+                  <p className="ml-6 text-[10px] text-gray-600">
+                    Satellite covers offshore/blind-spot AIS · ~{est.tiles} tile{est.tiles === 1 ? "" : "s"} ≈ {est.tiles * SAT_CREDITS_PER_TILE} credits/pull{est.capped ? ` (region large — ${est.tiles}/${est.total} tiles; draw smaller for full coverage)` : ""}
+                  </p>
+                );
+              })()}
               <label className="flex items-center gap-2 text-gray-300">
                 <input type="checkbox" checked={r.collectAdsb}
                   onChange={async (e) => { await setRegionCollection(r.id, { collectAdsb: e.target.checked }); qc.invalidateQueries({ queryKey: ["regions"] }); }} />
