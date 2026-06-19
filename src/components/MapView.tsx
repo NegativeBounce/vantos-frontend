@@ -624,7 +624,9 @@ export default function MapView({
         if (!f) return;
         const clusterId = (f.properties as { cluster_id: number }).cluster_id;
         const src = map.getSource("vessels") as mapboxgl.GeoJSONSource;
-        src.getClusterExpansionZoom(clusterId).then((zoom) => {
+        // mapbox-gl v3 returns a Promise; @types/mapbox-gl still types the old callback form.
+        const getZoom = src.getClusterExpansionZoom as unknown as (id: number) => Promise<number>;
+        getZoom(clusterId).then((zoom: number) => {
           map.easeTo({ center: (f.geometry as GeoJSON.Point).coordinates as [number, number], zoom });
         }).catch(() => undefined);
       });
