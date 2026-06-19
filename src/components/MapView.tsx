@@ -20,6 +20,12 @@ export type ViewportBbox = { minLat: number; minLon: number; maxLat: number; max
 // Imperative fly-to request: bump `key` to trigger an easeTo to (lng,lat). Used to snap
 // the map to a vessel chosen from a list (anomaly evidence, registry).
 export type FlyTo = { lng: number; lat: number; zoom?: number; key: number } | null;
+// A region's actual collection footprint: the bounding box (terrestrial/AIS collection
+// unit) + the satellite tile circles (Data Docked get-vessels-by-area, when Sat is on).
+export type Footprint = {
+  bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number };
+  tiles: { lng: number; lat: number; radiusKm: number }[];
+} | null;
 
 export type GnssCellView = {
   polygon: GeoJSON.Polygon;
@@ -123,6 +129,23 @@ function regionsData(regions: RegionPoly[] | null, selectedIds: string[]): GeoJS
   };
 }
 
+// A region's collection footprint: the bbox rectangle (AIS collection unit) + the
+// satellite tile circles (what Data Docked actually pulls). Lets the operator see whether
+// a drawn region covers the traffic before committing.
+function footprintData(fp: Footprint): GeoJSON.FeatureCollection {
+  if (!fp) return EMPTY;
+  const { minLat, minLon, maxLat, maxLon } = fp.bbox;
+  const features: GeoJSON.Feature[] = [
+    {
+      type: "Feature",
+      properties: { kind: "bbox" },
+      geometry: { type: "Polygon", coordinates: [[[minLon, minLat], [maxLon, minLat], [maxLon, maxLat], [minLon, maxLat], [minLon, minLat]]] },
+    },
+  ];
+  for (const t of fp.tiles) features.push({ ...circleFeature(t.lng, t.lat, t.radiusKm), properties: { kind: "tile" } });
+  return { type: "FeatureCollection", features };
+}
+
 // In-progress drawn polygon (custom region): a line through the vertices, a fill once
 // there are ≥3, and a dot per vertex.
 function drawData(verts: [number, number][] | null): GeoJSON.FeatureCollection {
@@ -213,6 +236,7 @@ export default function MapView({
   drawMode = false,
   drawVertices = null,
   onDrawPoint,
+  footprint = null,
 }: {
   vessels: VesselPosition[];
   selection: Selection;
@@ -235,6 +259,7 @@ export default function MapView({
   drawMode?: boolean;
   drawVertices?: [number, number][] | null;
   onDrawPoint?: (lng: number, lat: number) => void;
+  footprint?: Footprint;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
@@ -591,6 +616,19 @@ export default function MapView({
         map.on("mouseenter", lyr, () => (map.getCanvas().style.cursor = "pointer"));
         map.on("mouseleave", lyr, () => (map.getCanvas().style.cursor = boxModeRef.current || pickModeRef.current ? "crosshair" : ""));
       }
+      // Collection footprint (bbox + satellite tile circles) for the inspected region.
+      map.addSource("footprint", { type: "geojson", data: EMPTY });
+      map.addLayer({
+        id: "footprint-tiles", type: "line", source: "footprint",
+        filter: ["==", ["get", "kind"], "tile"],
+        paint: { "line-color": "#34d399", "line-width": 1, "line-dasharray": [2, 2], "line-opacity": 0.8 },
+      });
+      map.addLayer({
+        id: "footprint-bbox", type: "line", source: "footprint",
+        filter: ["==", ["get", "kind"], "bbox"],
+        paint: { "line-color": "#f8fafc", "line-width": 1.5, "line-dasharray": [4, 3], "line-opacity": 0.7 },
+      });
+
       // In-progress custom-region polygon (drawn vertices live in Workspace state).
       map.addSource("draw", { type: "geojson", data: EMPTY });
       map.addLayer({
@@ -799,6 +837,17 @@ export default function MapView({
     if (map.getSource("draw")) apply();
     else map.once("load", apply);
   }, [drawVertices]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      const src = map.getSource("footprint") as mapboxgl.GeoJSONSource | undefined;
+      if (src) src.setData(footprintData(footprint));
+    };
+    if (map.getSource("footprint")) apply();
+    else map.once("load", apply);
+  }, [footprint]);
 
   useEffect(() => {
     const map = mapRef.current;

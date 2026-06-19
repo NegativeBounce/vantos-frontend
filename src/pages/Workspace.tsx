@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import MapView, { type PickedVessel, type ViewportBbox, type FlyTo } from "../components/MapView";
+import MapView, { type PickedVessel, type ViewportBbox, type FlyTo, type Footprint } from "../components/MapView";
 import Modal from "../components/Modal";
 import MonitorButton from "../components/MonitorButton";
 import { usePersistentState } from "../lib/persist";
@@ -16,14 +16,33 @@ const SAT_TILE_STEP_KM = 70;
 const SAT_TILE_MAX = 12;
 const SAT_CREDITS_PER_TILE = 10;
 type Bbox = { minLat: number; minLon: number; maxLat: number; maxLon: number };
-function estimateSatTiles(bbox: Bbox): { tiles: number; total: number; capped: boolean } {
+function satGrid(bbox: Bbox): { rows: number; cols: number } {
   const midLat = (bbox.minLat + bbox.maxLat) / 2;
   const latSpanKm = Math.abs(bbox.maxLat - bbox.minLat) * 111;
   const lonSpanKm = Math.abs(bbox.maxLon - bbox.minLon) * 111 * Math.cos((midLat * Math.PI) / 180);
-  const rows = Math.max(1, Math.ceil(latSpanKm / SAT_TILE_STEP_KM));
-  const cols = Math.max(1, Math.ceil(lonSpanKm / SAT_TILE_STEP_KM));
+  return {
+    rows: Math.max(1, Math.ceil(latSpanKm / SAT_TILE_STEP_KM)),
+    cols: Math.max(1, Math.ceil(lonSpanKm / SAT_TILE_STEP_KM)),
+  };
+}
+function estimateSatTiles(bbox: Bbox): { tiles: number; total: number; capped: boolean } {
+  const { rows, cols } = satGrid(bbox);
   const total = rows * cols;
   return { tiles: Math.min(total, SAT_TILE_MAX), total, capped: total > SAT_TILE_MAX };
+}
+// Actual satellite tile centers (mirrors backend tileBbox) — for the footprint overlay.
+function satTileCenters(bbox: Bbox): { lng: number; lat: number; radiusKm: number }[] {
+  const { rows, cols } = satGrid(bbox);
+  const out: { lng: number; lat: number; radiusKm: number }[] = [];
+  for (let r = 0; r < rows; r++) {
+    const lat = rows === 1 ? (bbox.minLat + bbox.maxLat) / 2 : bbox.minLat + ((r + 0.5) / rows) * (bbox.maxLat - bbox.minLat);
+    for (let c = 0; c < cols; c++) {
+      const lng = cols === 1 ? (bbox.minLon + bbox.maxLon) / 2 : bbox.minLon + ((c + 0.5) / cols) * (bbox.maxLon - bbox.minLon);
+      out.push({ lng, lat, radiusKm: 50 });
+      if (out.length >= SAT_TILE_MAX) return out;
+    }
+  }
+  return out;
 }
 
 const REPORT_TYPES = ["Insurance Risk Advisory", "Weekly Maritime Intelligence", "Vessel Captain Advisory"];
@@ -136,6 +155,7 @@ export default function Workspace() {
   // Transient interaction/operation state — intentionally NOT persisted.
   const [areaPickMode, setAreaPickMode] = useState(false);
   const [pullState, setPullState] = useState<Record<string, string>>({});
+  const [footprintRegionId, setFootprintRegionId] = useState<string | null>(null);
 
   // Custom-region drawing (transient): click to add vertices → name + colour → save.
   const [drawMode, setDrawMode] = useState(false);
@@ -343,6 +363,11 @@ export default function Workspace() {
   // Region options modal opened by clicking a region on the map.
   const [regionModalId, setRegionModalId] = useState<string | null>(null);
   const regionModalRegion = coverageRegions.find((r) => r.id === regionModalId) ?? null;
+  // Collection-footprint overlay: bbox + satellite tiles for the region being inspected.
+  const footprintRegion = coverageRegions.find((r) => r.id === footprintRegionId) ?? null;
+  const footprint: Footprint = footprintRegion?.boundingBox
+    ? { bbox: footprintRegion.boundingBox, tiles: satTileCenters(footprintRegion.boundingBox) }
+    : null;
   // POI labels (only when the Places layer is on).
   const pois = useMemo(
     () =>
@@ -432,6 +457,7 @@ export default function Workspace() {
         drawMode={drawMode}
         drawVertices={drawMode || drawForm ? drawVerts : null}
         onDrawPoint={(lng, lat) => setDrawVerts((v) => [...v, [lng, lat] as [number, number]])}
+        footprint={footprint}
       />
 
       {/* Tool tabs */}
@@ -1080,6 +1106,15 @@ export default function Workspace() {
               <input type="checkbox" checked={sel} onChange={() => toggleRegionSelect(r.id)} />
               Show on map <span className="text-[10px] text-gray-500">(green outline)</span>
             </label>
+            <label className="mt-2 flex items-center gap-2 text-gray-300">
+              <input type="checkbox" checked={footprintRegionId === r.id} onChange={(e) => setFootprintRegionId(e.target.checked ? r.id : null)} />
+              Show collection footprint <span className="text-[10px] text-gray-500">(coverage area)</span>
+            </label>
+            {footprintRegionId === r.id && r.boundingBox && (
+              <p className="ml-6 text-[10px] leading-snug text-gray-500">
+                <span className="text-slate-200">▭ white dashed</span> = AIS collection box · <span className="text-emerald-300">◯ green dashed</span> = {satTileCenters(r.boundingBox!).length} satellite tile{satTileCenters(r.boundingBox!).length === 1 ? "" : "s"} (pulled when Sat is on). Redraw so the footprint straddles the traffic lane.
+              </p>
+            )}
 
             <div className="mt-3 border-t border-white/10 pt-2 text-[11px] text-gray-400">Data collection</div>
             <div className="mt-1 flex flex-col gap-1.5 text-[12px]">
