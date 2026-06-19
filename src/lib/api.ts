@@ -233,6 +233,7 @@ export const getDataSources = () => apiGet<{ status: string; dataSources: DataSo
 // ---- Data Docked usage / credit telemetry ----
 export type IngestionRun = {
   id: string;
+  source: string;
   endpoint: string;
   status: string;
   records: number;

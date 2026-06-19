@@ -5,7 +5,7 @@ import MapView, { type PickedVessel, type ViewportBbox, type FlyTo } from "../co
 import Modal from "../components/Modal";
 import MonitorButton from "../components/MonitorButton";
 import { usePersistentState } from "../lib/persist";
-import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, createRegion, deleteRegion, type AreaSearchResult, type Anomaly, type Region } from "../lib/api";
+import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, createRegion, deleteRegion, getIngestionRuns, type AreaSearchResult, type Anomaly, type Region } from "../lib/api";
 
 // Overlay-colour palette for custom regions (default first = the baseline green).
 const REGION_PALETTE = ["#22c55e", "#38bdf8", "#f59e0b", "#ef4444", "#a855f7", "#eab308", "#ec4899", "#14b8a6"];
@@ -33,7 +33,39 @@ const CADENCE_OPTIONS = [
   { v: 180, l: "3h" },
   { v: 60, l: "1h" },
 ];
-type Tool = "layers" | "vessels" | "area" | "regions" | "gaps" | "analysis";
+type Tool = "layers" | "vessels" | "area" | "regions" | "gaps" | "analysis" | "activity";
+
+// Collection-activity labels: map an ingestion endpoint to a friendly source + cost class.
+const ENDPOINT_INFO: Record<string, { label: string; paid: boolean }> = {
+  "aisstream-snapshot": { label: "AISStream · terrestrial AIS", paid: false },
+  "get-vessels-by-area": { label: "Data Docked · satellite AIS", paid: true },
+  "get-vessel-info": { label: "Data Docked · enrichment", paid: true },
+  "get-vessels-location-bulk-search": { label: "Data Docked · gap verify", paid: true },
+  "get-aircraft-by-area": { label: "ADS-B Exchange · GNSS", paid: false },
+};
+function endpointInfo(endpoint: string): { label: string; paid: boolean } {
+  return ENDPOINT_INFO[endpoint] ?? { label: endpoint, paid: false };
+}
+// Compact "time ago".
+function ago(iso: string | null): string {
+  if (!iso) return "—";
+  const ms = Date.now() - Date.parse(iso);
+  if (!Number.isFinite(ms)) return "—";
+  if (ms < 60_000) return `${Math.max(1, Math.round(ms / 1000))}s ago`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`;
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h ago`;
+  return `${Math.round(ms / 86_400_000)}d ago`;
+}
+// When a region's next AIS/Sat snapshot is due (last pull + cadence).
+function fmtNextPull(lastIso: string | null, cadenceMin: number): string {
+  if (!lastIso) return "due now";
+  const ms = Date.parse(lastIso) + cadenceMin * 60_000 - Date.now();
+  if (ms <= 0) return "due now";
+  const h = ms / 3_600_000;
+  if (h < 1) return `next ~${Math.max(1, Math.round(ms / 60_000))}m`;
+  if (h < 24) return `next ~${Math.round(h)}h`;
+  return `next ~${Math.round(h / 24)}d`;
+}
 
 const ANOMALY_LABELS: Record<string, string> = {
   impossible_movement: "Impossible movement",
@@ -268,6 +300,9 @@ export default function Workspace() {
   const [anomalyFilter, setAnomalyFilter] = useState<string | null>(null);
   const anomalies = useQuery({ queryKey: ["anomalies"], queryFn: () => getAnomalies(), refetchInterval: 120000 });
   const anomalyList = anomalies.data?.anomalies ?? [];
+
+  // Collection & activity — fetched only while the Activity tab is open (on-demand).
+  const runs = useQuery({ queryKey: ["ingestionRuns", "activity"], queryFn: () => getIngestionRuns(100), enabled: tool === "activity", refetchInterval: 30000 });
   const shownAnomalies = anomalyFilter ? anomalyList.filter((a) => a.severity === anomalyFilter) : anomalyList;
   const selectedAnomaly = anomalyList.find((a) => a.id === selectedAnomalyId) ?? null;
 
@@ -370,6 +405,7 @@ export default function Workspace() {
     { key: "regions", label: "Regions", badge: regionCount },
     { key: "gaps", label: "AIS Gaps", badge: gapsOn ? gapList?.length ?? 0 : undefined },
     { key: "analysis", label: "Vessel Analysis", badge: anomalyList.length || undefined },
+    { key: "activity", label: "Activity" },
   ];
 
   return (
@@ -930,6 +966,104 @@ export default function Workspace() {
           )}
         </Modal>
       )}
+
+      {tool === "activity" && (() => {
+        const collecting = coverageRegions.filter((r) => r.collectAis || r.collectAisSatellite || r.collectAdsb);
+        const runList = runs.data?.runs ?? [];
+        const summary = runs.data?.summary ?? [];
+        const credits24h = summary.reduce((s, x) => s + (x.credits_spent || 0), 0);
+        const calls24h = summary.reduce((s, x) => s + (x.runs || 0), 0);
+        const lastRun = runList[0];
+        return (
+          <Modal title="Collection & Activity" onClose={() => setTool(null)} width="w-[36rem]">
+            <p className="text-[10px] leading-snug text-gray-500">
+              Collection is <strong className="text-gray-400">scheduled snapshot pulls</strong>, not a live stream — each region pulls on its own cadence. Nothing is called for a region until you enable a source on it. Every call is logged below.
+            </p>
+
+            <div className="mt-2 flex flex-wrap gap-2">
+              <div className="rounded border border-white/10 bg-white/5 px-3 py-1.5 text-[11px]">
+                <div className="text-gray-500">Regions collecting</div>
+                <div className="font-mono text-sky-300">{collecting.length}</div>
+              </div>
+              <div className="rounded border border-white/10 bg-white/5 px-3 py-1.5 text-[11px]">
+                <div className="text-gray-500">Last call</div>
+                <div className="font-mono text-gray-200">{lastRun ? ago(lastRun.finished_at ?? lastRun.started_at) : "—"}</div>
+              </div>
+              <div className="rounded border border-white/10 bg-white/5 px-3 py-1.5 text-[11px]">
+                <div className="text-gray-500">Calls · Credits (24h)</div>
+                <div className="font-mono text-gray-200">{calls24h} · <span className="text-amber-400">{credits24h} cr</span></div>
+              </div>
+            </div>
+
+            <div className="mt-3">
+              <div className="mb-1 text-[10px] uppercase tracking-wide text-gray-500">Collection status</div>
+              {collecting.length === 0 ? (
+                <p className="text-[11px] text-gray-500">No regions are collecting. Enable AIS / Sat / ADS-B on a region in the Regions tab.</p>
+              ) : (
+                <ul className="max-h-40 space-y-1 overflow-auto">
+                  {collecting.map((r) => (
+                    <li key={r.id} className="rounded border border-white/10 px-2 py-1.5 text-[11px]">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate text-gray-200">{r.name}</span>
+                        <span className="flex shrink-0 gap-1">
+                          {r.collectAis && <span className="rounded bg-sky-500/20 px-1.5 text-[10px] text-sky-300">AIS</span>}
+                          {r.collectAisSatellite && <span className="rounded bg-emerald-500/20 px-1.5 text-[10px] text-emerald-300">Sat</span>}
+                          {r.collectAdsb && <span className="rounded bg-orange-500/20 px-1.5 text-[10px] text-orange-300">ADS-B</span>}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 text-[10px] text-gray-500">
+                        {(r.collectAis || r.collectAisSatellite)
+                          ? `AIS ${fmtAgo(r.lastAisPullAt)} · ${fmtNextPull(r.lastAisPullAt, r.aisPullCadenceMinutes)} · every ${cadenceLabel(r.aisPullCadenceMinutes)}`
+                          : ""}
+                        {r.collectAdsb ? `${r.collectAis || r.collectAisSatellite ? " · " : ""}ADS-B every ~10m` : ""}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="mt-3">
+              <div className="mb-1 text-[10px] uppercase tracking-wide text-gray-500">Recent calls</div>
+              {runs.isLoading ? (
+                <p className="text-[11px] text-gray-500">Loading…</p>
+              ) : runList.length === 0 ? (
+                <p className="text-[11px] text-gray-500">No API calls recorded yet.</p>
+              ) : (
+                <div className="max-h-56 overflow-auto">
+                  <table className="w-full text-left text-[10px]">
+                    <thead className="text-gray-500">
+                      <tr className="border-b border-white/10">
+                        <th className="py-1 pr-2 font-medium">When</th>
+                        <th className="py-1 pr-2 font-medium">Source</th>
+                        <th className="py-1 pr-2 font-medium">Region</th>
+                        <th className="py-1 pr-2 font-medium">Recs</th>
+                        <th className="py-1 font-medium">Cost</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {runList.slice(0, 40).map((r) => {
+                        const info = endpointInfo(r.endpoint);
+                        return (
+                          <tr key={r.id} className="border-b border-white/5">
+                            <td className="py-1 pr-2 text-gray-400">{ago(r.finished_at ?? r.started_at)}</td>
+                            <td className="py-1 pr-2 text-gray-300">{info.label}{r.status !== "success" && r.status !== "running" ? <span className="text-amber-400"> · {r.status}</span> : ""}</td>
+                            <td className="py-1 pr-2 text-gray-500">{r.region_name ?? "—"}</td>
+                            <td className="py-1 pr-2 text-gray-400">{r.records}</td>
+                            <td className="py-1">{info.paid ? <span className="text-amber-400">{r.credits_spent != null ? `${r.credits_spent} cr` : "—"}</span> : <span className="text-gray-600">free</span>}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <p className="mt-2 text-[10px] text-gray-600">AISStream &amp; ADS-B are free; Data Docked (satellite AIS, enrichment, gap-verify) spends credits. Set per-region cadence in the Regions tab to control how often AIS pulls.</p>
+          </Modal>
+        );
+      })()}
 
       {/* Region options — opened by clicking a region on the map */}
       {regionModalRegion && (() => {
