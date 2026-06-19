@@ -13,11 +13,7 @@ const REGION_PALETTE = ["#22c55e", "#38bdf8", "#f59e0b", "#ef4444", "#a855f7", "
 // Satellite tiling estimate (mirrors backend defaults: 50km radius, 70km step, max 12 tiles).
 // Each tile is a Data Docked get-vessels-by-area call ≈ 10 credits.
 const SAT_TILE_STEP_KM = 70;
-const SAT_TILE_MAX = 12;
-const SAT_CREDITS_PER_TILE = 10;
-// Max custom-region box span per axis (km). Keeps satellite tiling within the credit cap
-// (≈3 tiles/axis at the 70 km step). Cover a larger area with several boxes.
-const MAX_REGION_SPAN_KM = 210;
+const SAT_TILE_MAX = 24; // mirror backend SAT_TILE_MAX_TILES — region auto-tiles up to this
 type Bbox = { minLat: number; minLon: number; maxLat: number; maxLon: number };
 function satGrid(bbox: Bbox): { rows: number; cols: number } {
   const midLat = (bbox.minLat + bbox.maxLat) / 2;
@@ -160,12 +156,11 @@ export default function Workspace() {
   const [pullState, setPullState] = useState<Record<string, string>>({});
   const [footprintRegionId, setFootprintRegionId] = useState<string | null>(null);
 
-  // Custom-region drawing (transient): drag a box → name + colour → save. The box is
-  // capped at MAX_REGION_SPAN_KM/axis so satellite tiling stays within the credit cap.
+  // Custom-region drawing (transient): drag a box of any size → name + colour → save.
+  // The region is one box; the satellite pull auto-tiles it (bounded by the credit cap).
   const [drawBoxMode, setDrawBoxMode] = useState(false);
   const [drawForm, setDrawForm] = useState(false); // box drawn → naming/colour step
   const [drawBox, setDrawBox] = useState<Bbox | null>(null);
-  const [boxClamped, setBoxClamped] = useState(false);
   const [newRegionName, setNewRegionName] = useState("");
   const [newRegionColor, setNewRegionColor] = useState(REGION_PALETTE[0]);
   const [savingRegion, setSavingRegion] = useState(false);
@@ -176,7 +171,6 @@ export default function Workspace() {
     setAreaPickMode(false);
     setTool(null);
     setDrawBox(null);
-    setBoxClamped(false);
     setDrawForm(false);
     setDrawErr(null);
     setNewRegionName("");
@@ -187,21 +181,12 @@ export default function Workspace() {
     setDrawBoxMode(false);
     setDrawForm(false);
     setDrawBox(null);
-    setBoxClamped(false);
     setDrawErr(null);
   }
-  // Receive a dragged rectangle; clamp each axis to the max span (keeps satellite tiling
-  // bounded) then advance to the name/colour step.
+  // Receive a dragged rectangle of any size → name/colour step. The region stays one box;
+  // satellite collection auto-tiles it (bounded + costed by the satellite tile cap).
   function handleBoxDrawn(bbox: Bbox) {
-    let { minLat, minLon, maxLat, maxLon } = bbox;
-    const midLat = (minLat + maxLat) / 2;
-    const latSpanKm = (maxLat - minLat) * 111;
-    const lonSpanKm = (maxLon - minLon) * 111 * Math.cos((midLat * Math.PI) / 180);
-    let clamped = false;
-    if (latSpanKm > MAX_REGION_SPAN_KM) { const d = MAX_REGION_SPAN_KM / 111; maxLat = minLat + d; clamped = true; }
-    if (lonSpanKm > MAX_REGION_SPAN_KM) { const d = MAX_REGION_SPAN_KM / (111 * Math.cos((midLat * Math.PI) / 180)); maxLon = minLon + d; clamped = true; }
-    setDrawBox({ minLat, minLon, maxLat, maxLon });
-    setBoxClamped(clamped);
+    setDrawBox(bbox);
     setDrawBoxMode(false);
     setDrawForm(true);
   }
@@ -506,7 +491,7 @@ export default function Workspace() {
           {!drawForm ? (
             <>
               <div className="font-medium text-sky-300">Draw a custom region</div>
-              <p className="mt-1 text-gray-400">Click and drag a rectangle on the map to set the region area. Max {MAX_REGION_SPAN_KM} km per side — draw several to cover more.</p>
+              <p className="mt-1 text-gray-400">Click and drag a rectangle on the map — any size. It's one region; satellite collection auto-tiles it in the background (cost shown next).</p>
               <div className="mt-2 flex gap-1.5">
                 <button onClick={cancelDrawRegion} className="ml-auto rounded border border-white/10 px-2 py-1 hover:bg-white/10">Cancel</button>
               </div>
@@ -514,7 +499,6 @@ export default function Workspace() {
           ) : (
             <>
               <div className="font-medium text-sky-300">Name &amp; colour</div>
-              {boxClamped && <p className="mt-1 text-[10px] text-amber-300/90">Box was capped to the {MAX_REGION_SPAN_KM} km max — add more regions to cover a wider area.</p>}
               <input value={newRegionName} onChange={(e) => setNewRegionName(e.target.value)} autoFocus placeholder="Region name"
                 className="mt-2 w-full rounded bg-black/30 px-2 py-1 ring-1 ring-white/10 placeholder:text-gray-600" />
               <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -526,10 +510,10 @@ export default function Workspace() {
                 <input type="color" value={newRegionColor} onChange={(e) => setNewRegionColor(e.target.value)}
                   className="h-6 w-8 cursor-pointer rounded bg-transparent" title="Custom colour" />
               </div>
-              {drawBox && <p className="mt-2 text-[10px] text-gray-500">{(() => { const e = estimateSatTiles(drawBox); return `Satellite would tile this into ${e.tiles} cell${e.tiles === 1 ? "" : "s"} ≈ ${e.tiles * SAT_CREDITS_PER_TILE} credits/pull. Turn on AIS / Sat in the Regions tab once saved.`; })()}</p>}
+              {drawBox && <p className="mt-2 text-[10px] text-gray-500">{(() => { const e = estimateSatTiles(drawBox); return `One region; satellite auto-tiles it into ${e.tiles}${e.capped ? ` of ${e.total}` : ""} cell${e.tiles === 1 ? "" : "s"} ≈ ${e.tiles * SAT_CREDITS_PER_TILE} credits/pull${e.capped ? " (covers part — tighten the box or raise SAT_TILE_MAX_TILES for full coverage)" : ""}. Turn on AIS / Sat in the Regions tab once saved.`; })()}</p>}
               {drawErr && <p className="mt-1 text-amber-400">{drawErr}</p>}
               <div className="mt-2 flex gap-1.5">
-                <button onClick={() => { setDrawForm(false); setDrawBox(null); setBoxClamped(false); setDrawBoxMode(true); }} className="rounded border border-white/10 px-2 py-1 hover:bg-white/10">↻ Redraw</button>
+                <button onClick={() => { setDrawForm(false); setDrawBox(null); setDrawBoxMode(true); }} className="rounded border border-white/10 px-2 py-1 hover:bg-white/10">↻ Redraw</button>
                 <button onClick={saveCustomRegion} disabled={savingRegion || !newRegionName.trim()}
                   className="rounded bg-emerald-600 px-2 py-1 font-medium text-white hover:bg-emerald-500 disabled:opacity-50">{savingRegion ? "Saving…" : "Save region"}</button>
                 <button onClick={cancelDrawRegion} className="ml-auto rounded border border-white/10 px-2 py-1 hover:bg-white/10">Cancel</button>
