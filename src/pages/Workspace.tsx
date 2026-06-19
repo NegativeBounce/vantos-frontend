@@ -5,7 +5,7 @@ import MapView, { type PickedVessel, type ViewportBbox, type FlyTo, type Footpri
 import Modal from "../components/Modal";
 import MonitorButton from "../components/MonitorButton";
 import { usePersistentState } from "../lib/persist";
-import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, createRegion, deleteRegion, getIngestionRuns, type AreaSearchResult, type Anomaly, type Region } from "../lib/api";
+import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, runAnomalyAnalysis, clearAnomalies, saveAnalysisSnapshot, getAnalysisSnapshots, getAnalysisSnapshot, deleteAnalysisSnapshot, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, createRegion, deleteRegion, getIngestionRuns, type AreaSearchResult, type Anomaly, type Region } from "../lib/api";
 
 // Overlay-colour palette for custom regions (default first = the baseline green).
 const REGION_PALETTE = ["#22c55e", "#38bdf8", "#f59e0b", "#ef4444", "#a855f7", "#eab308", "#ec4899", "#14b8a6"];
@@ -83,6 +83,39 @@ function fmtNextPull(lastIso: string | null, cadenceMin: number): string {
   if (h < 1) return `next ~${Math.max(1, Math.round(ms / 60_000))}m`;
   if (h < 24) return `next ~${Math.round(h)}h`;
   return `next ~${Math.round(h / 24)}d`;
+}
+
+// Persistent-analysis durations (minutes; 0 = open-ended until toggled off).
+const ANALYSIS_DURATIONS = [
+  { v: 60, l: "1h" },
+  { v: 360, l: "6h" },
+  { v: 1440, l: "24h" },
+  { v: 0, l: "Open-ended" },
+];
+
+function downloadFile(name: string, content: string, mime: string): void {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+function csvCell(v: unknown): string {
+  const s = v === null || v === undefined ? "" : String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+type ExportAnomaly = {
+  severity: string; type: string; title: string; name: string | null; mmsi: string | null; imo: string | null;
+  latitude: number | null; longitude: number | null; occurredAt: string | null; detectedAt: string; description: string;
+};
+function anomaliesToCsv(rows: ExportAnomaly[]): string {
+  const head = ["severity", "type", "title", "name", "mmsi", "imo", "latitude", "longitude", "occurredAt", "detectedAt", "description"];
+  const lines = rows.map((r) =>
+    [r.severity, r.type, r.title, r.name, r.mmsi, r.imo, r.latitude, r.longitude, r.occurredAt, r.detectedAt, r.description].map(csvCell).join(",")
+  );
+  return [head.join(","), ...lines].join("\n");
 }
 
 const ANOMALY_LABELS: Record<string, string> = {
@@ -326,16 +359,71 @@ export default function Workspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.key]);
 
-  // Vessel anomalies / pattern analysis (scanned server-side; always polled for the badge).
+  // Vessel anomalies / pattern analysis — region-scoped + operator-controlled (D-62).
   const [selectedAnomalyId, setSelectedAnomalyId] = useState<string | null>(null);
   const [anomalyFilter, setAnomalyFilter] = useState<string | null>(null);
-  const anomalies = useQuery({ queryKey: ["anomalies"], queryFn: () => getAnomalies(), refetchInterval: 120000 });
-  const anomalyList = anomalies.data?.anomalies ?? [];
+  const [analysisRegionIds, setAnalysisRegionIds] = usePersistentState<string[]>("analysisRegionIds", []);
+  const [analysisDuration, setAnalysisDuration] = useState<number>(360);
+  const [snapshotName, setSnapshotName] = useState("");
+  const [analysisBusy, setAnalysisBusy] = useState<string | null>(null);
+  const [analysisMsg, setAnalysisMsg] = useState<string | null>(null);
+  const [viewingSnapshotId, setViewingSnapshotId] = useState<string | null>(null);
+  const scopeIds = analysisRegionIds.length ? analysisRegionIds : undefined;
+  const anomalies = useQuery({ queryKey: ["anomalies", analysisRegionIds], queryFn: () => getAnomalies({ regionIds: scopeIds }), refetchInterval: 120000 });
+  const snapshots = useQuery({ queryKey: ["anomaly-snapshots"], queryFn: getAnalysisSnapshots, enabled: tool === "analysis" });
+  const viewingSnapshot = useQuery({ queryKey: ["anomaly-snapshot", viewingSnapshotId], queryFn: () => getAnalysisSnapshot(viewingSnapshotId as string), enabled: !!viewingSnapshotId });
+  const liveAnomalies = anomalies.data?.anomalies ?? [];
 
   // Collection & activity — fetched only while the Activity tab is open (on-demand).
   const runs = useQuery({ queryKey: ["ingestionRuns", "activity"], queryFn: () => getIngestionRuns(100), enabled: tool === "activity", refetchInterval: 30000 });
+  // When viewing a saved snapshot, show its frozen findings; otherwise the live scan.
+  const anomalyList = viewingSnapshotId ? viewingSnapshot.data?.snapshot.findings ?? [] : liveAnomalies;
   const shownAnomalies = anomalyFilter ? anomalyList.filter((a) => a.severity === anomalyFilter) : anomalyList;
   const selectedAnomaly = anomalyList.find((a) => a.id === selectedAnomalyId) ?? null;
+  const analyzingRegions = useMemo(() => coverageRegions.filter((r) => r.analyze), [coverageRegions]);
+
+  async function withAnalysisBusy(key: string, fn: () => Promise<void>, okMsg?: string) {
+    setAnalysisBusy(key);
+    setAnalysisMsg(null);
+    try { await fn(); if (okMsg) setAnalysisMsg(okMsg); }
+    catch (e) { setAnalysisMsg(`Error: ${(e as Error).message}`); }
+    finally { setAnalysisBusy(null); }
+  }
+  const runOnce = () => withAnalysisBusy("run", async () => {
+    const res = await runAnomalyAnalysis(analysisRegionIds);
+    if (res.status !== "ok") throw new Error(res.error || "scan failed");
+    await qc.invalidateQueries({ queryKey: ["anomalies"] });
+    setAnalysisMsg(`Scan complete — ${res.found ?? 0} findings across ${res.regions ?? 0} region(s).`);
+  });
+  const startPersistent = () => withAnalysisBusy("start", async () => {
+    for (const id of analysisRegionIds) await setRegionCollection(id, { analyze: true, analyzeDurationMinutes: analysisDuration || null });
+    await qc.invalidateQueries({ queryKey: ["regions"] });
+    await runAnomalyAnalysis(analysisRegionIds);
+    await qc.invalidateQueries({ queryKey: ["anomalies"] });
+  }, "Persistent analysis started.");
+  const stopPersistent = (ids: string[]) => withAnalysisBusy("stop", async () => {
+    for (const id of ids) await setRegionCollection(id, { analyze: false });
+    await qc.invalidateQueries({ queryKey: ["regions"] });
+  }, "Persistent analysis stopped.");
+  const doClear = (ids?: string[]) => withAnalysisBusy(ids ? "clear-sel" : "clear-all", async () => {
+    await clearAnomalies(ids);
+    setSelectedAnomalyId(null);
+    await qc.invalidateQueries({ queryKey: ["anomalies"] });
+  }, "Records cleared.");
+  const doSaveSnapshot = () => withAnalysisBusy("save", async () => {
+    const res = await saveAnalysisSnapshot(snapshotName.trim(), scopeIds);
+    if (res.status !== "ok") throw new Error(res.error || "save failed");
+    setSnapshotName("");
+    await qc.invalidateQueries({ queryKey: ["anomaly-snapshots"] });
+  }, "Snapshot saved.");
+  function exportFindings(format: "csv" | "json") {
+    const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    if (format === "json") downloadFile(`anomalies-${ts}.json`, JSON.stringify(anomalyList, null, 2), "application/json");
+    else downloadFile(`anomalies-${ts}.csv`, anomaliesToCsv(anomalyList as unknown as ExportAnomaly[]), "text/csv");
+  }
+  function toggleAnalysisRegion(id: string) {
+    setAnalysisRegionIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
 
   // Area search — center + radius persist; the rest is transient.
   const [center, setCenter] = usePersistentState<{ lng: number; lat: number } | null>("areaCenter", null);
@@ -967,7 +1055,101 @@ export default function Workspace() {
             </div>
           ) : (
             <>
-              <div className="mt-2 flex flex-wrap gap-1 text-[10px]">
+              {viewingSnapshotId ? (
+                <div className="mt-2 flex items-center justify-between rounded border border-sky-500/30 bg-sky-500/10 px-2 py-1.5 text-[11px]">
+                  <span className="min-w-0 truncate text-sky-200">Snapshot: {viewingSnapshot.data?.snapshot.name ?? "…"} <span className="text-gray-400">({viewingSnapshot.data?.snapshot.regionNames})</span></span>
+                  <button onClick={() => { setViewingSnapshotId(null); setSelectedAnomalyId(null); }} className="shrink-0 rounded border border-white/10 px-2 py-0.5 hover:bg-white/10">← Live</button>
+                </div>
+              ) : (
+                <>
+                  <div className="mt-2 rounded border border-white/10 p-2">
+                    <div className="mb-1 flex items-center justify-between">
+                      <span className="text-[10px] uppercase tracking-wide text-gray-500">Analyze region(s)</span>
+                      <span className="text-[10px] text-gray-500">{analysisRegionIds.length || "none"} selected</span>
+                    </div>
+                    <div className="max-h-28 space-y-0.5 overflow-auto">
+                      {coverageRegions.map((r) => (
+                        <label key={r.id} className="flex items-center gap-1.5 text-[11px] text-gray-300">
+                          <input type="checkbox" checked={analysisRegionIds.includes(r.id)} onChange={() => toggleAnalysisRegion(r.id)} />
+                          <span className="min-w-0 flex-1 truncate">{r.name}</span>
+                          {r.analyze && <span className="shrink-0 rounded bg-emerald-500/20 px-1 text-[9px] text-emerald-300">live</span>}
+                        </label>
+                      ))}
+                      {coverageRegions.length === 0 && <p className="text-[11px] text-gray-500">No regions.</p>}
+                    </div>
+                    {analysisRegionIds.length === 0 && <p className="mt-1 text-[10px] text-amber-300/80">Analysis is opt-in — pick region(s) to analyze.</p>}
+                  </div>
+
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px]">
+                    <button onClick={runOnce} disabled={!analysisRegionIds.length || analysisBusy !== null}
+                      className="rounded bg-sky-600 px-2 py-1 font-medium text-white hover:bg-sky-500 disabled:opacity-40">{analysisBusy === "run" ? "Running…" : "Run once now"}</button>
+                    <span className="text-gray-600">·</span>
+                    <span className="text-gray-400">Persistent</span>
+                    <select value={analysisDuration} onChange={(e) => setAnalysisDuration(Number(e.target.value))}
+                      className="rounded bg-black/30 px-1.5 py-1 text-[11px] ring-1 ring-white/10">
+                      {ANALYSIS_DURATIONS.map((d) => <option key={d.v} value={d.v}>{d.l}</option>)}
+                    </select>
+                    <button onClick={startPersistent} disabled={!analysisRegionIds.length || analysisBusy !== null}
+                      className="rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-40">{analysisBusy === "start" ? "Starting…" : "Start"}</button>
+                  </div>
+
+                  {analyzingRegions.length > 0 && (
+                    <div className="mt-2 rounded border border-emerald-500/30 bg-emerald-500/5 p-2 text-[11px]">
+                      <div className="flex items-center justify-between">
+                        <span className="text-emerald-300">Analyzing {analyzingRegions.length} region(s) as data lands</span>
+                        <button onClick={() => stopPersistent(analyzingRegions.map((r) => r.id))} disabled={analysisBusy !== null}
+                          className="rounded border border-white/10 px-2 py-0.5 hover:bg-white/10 disabled:opacity-40">Stop all</button>
+                      </div>
+                      <div className="mt-1 space-y-0.5 text-[10px] text-gray-400">
+                        {analyzingRegions.map((r) => (
+                          <div key={r.id} className="flex justify-between gap-2">
+                            <span className="truncate">{r.name}</span>
+                            <span className="shrink-0 text-gray-500">{r.analyzeUntil ? `until ${new Date(r.analyzeUntil).toLocaleTimeString()}` : "open-ended"}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {analysisMsg && <p className="mt-2 text-[11px] text-sky-300/90">{analysisMsg}</p>}
+
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px]">
+                    <button onClick={() => doClear(scopeIds)} disabled={analysisBusy !== null || !liveAnomalies.length}
+                      className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-amber-200 hover:bg-amber-500/20 disabled:opacity-40">Clear selected</button>
+                    <button onClick={() => { if (confirm("Clear ALL anomaly records?")) doClear(); }} disabled={analysisBusy !== null}
+                      className="rounded border border-red-500/30 bg-red-500/10 px-2 py-1 text-red-200 hover:bg-red-500/20 disabled:opacity-40">Clear all</button>
+                    <button onClick={() => exportFindings("csv")} disabled={!anomalyList.length}
+                      className="rounded border border-white/10 px-2 py-1 hover:bg-white/10 disabled:opacity-40">Export CSV</button>
+                    <button onClick={() => exportFindings("json")} disabled={!anomalyList.length}
+                      className="rounded border border-white/10 px-2 py-1 hover:bg-white/10 disabled:opacity-40">JSON</button>
+                  </div>
+
+                  <div className="mt-1.5 flex gap-1.5">
+                    <input value={snapshotName} onChange={(e) => setSnapshotName(e.target.value)} placeholder="Snapshot name…"
+                      className="min-w-0 flex-1 rounded bg-black/30 px-2 py-1 text-[11px] ring-1 ring-white/10 placeholder:text-gray-600" />
+                    <button onClick={doSaveSnapshot} disabled={!snapshotName.trim() || analysisBusy !== null || !liveAnomalies.length}
+                      className="rounded bg-emerald-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-500 disabled:opacity-40">{analysisBusy === "save" ? "Saving…" : "Save snapshot"}</button>
+                  </div>
+
+                  {(snapshots.data?.snapshots?.length ?? 0) > 0 && (
+                    <div className="mt-2 rounded border border-white/10 p-2">
+                      <div className="mb-1 text-[10px] uppercase tracking-wide text-gray-500">Saved snapshots</div>
+                      <ul className="max-h-24 space-y-0.5 overflow-auto text-[11px]">
+                        {(snapshots.data?.snapshots ?? []).map((s) => (
+                          <li key={s.id} className="flex items-center justify-between gap-2">
+                            <button onClick={() => { setViewingSnapshotId(s.id); setSelectedAnomalyId(null); }} className="min-w-0 flex-1 truncate text-left text-sky-300 hover:underline" title={s.regionNames ?? ""}>
+                              {s.name} <span className="text-gray-500">· {s.findingCount} · {new Date(s.createdAt).toLocaleDateString()}</span>
+                            </button>
+                            <button onClick={async () => { if (confirm(`Delete snapshot "${s.name}"?`)) { await deleteAnalysisSnapshot(s.id); qc.invalidateQueries({ queryKey: ["anomaly-snapshots"] }); } }} className="shrink-0 text-gray-500 hover:text-red-300">✕</button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </>
+              )}
+
+              <div className="mt-3 flex flex-wrap gap-1 text-[10px]">
                 {[null, "high", "medium", "low"].map((s) => (
                   <button key={s ?? "all"} onClick={() => setAnomalyFilter(s)}
                     className={`rounded px-2 py-0.5 ${anomalyFilter === s ? "bg-sky-500/20 text-sky-300" : "text-gray-400 hover:bg-white/10"}`}>
@@ -976,10 +1158,10 @@ export default function Workspace() {
                 ))}
                 <span className="ml-auto text-gray-500">{shownAnomalies.length} finding{shownAnomalies.length === 1 ? "" : "s"}</span>
               </div>
-              {anomalies.isLoading ? (
+              {anomalies.isLoading && !viewingSnapshotId ? (
                 <p className="mt-2 text-gray-500">Scanning…</p>
               ) : shownAnomalies.length === 0 ? (
-                <p className="mt-2 text-gray-500">No anomalies detected yet. The analysis scan runs about every 20 minutes over recent AIS history.</p>
+                <p className="mt-2 text-gray-500">No findings. Pick region(s) above, then <strong>Run once</strong> or <strong>Start</strong> persistent analysis.</p>
               ) : (
                 <ul className="mt-2 max-h-80 space-y-1 overflow-auto">
                   {shownAnomalies.map((a) => (

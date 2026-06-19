@@ -90,6 +90,8 @@ export type Region = {
   polygon: number[][] | null;
   color: string | null;
   isCustom: boolean;
+  analyze: boolean;
+  analyzeUntil: string | null;
   lastAisPullAt: string | null;
   aisPullCadenceMinutes: number;
 };
@@ -108,7 +110,7 @@ export async function deleteRegion(id: string): Promise<{ status: string; error?
 
 export async function setRegionCollection(
   id: string,
-  input: { collectAis?: boolean; collectAdsb?: boolean; collectAisSatellite?: boolean; aisPullCadenceMinutes?: number }
+  input: { collectAis?: boolean; collectAdsb?: boolean; collectAisSatellite?: boolean; aisPullCadenceMinutes?: number; analyze?: boolean; analyzeDurationMinutes?: number | null }
 ): Promise<{ status: string; region?: Region; error?: string }> {
   const res = await authedFetch(`/api/regions/${id}`, {
     method: "PATCH",
@@ -260,6 +262,7 @@ export type Anomaly = {
   imo: string | null;
   name: string | null;
   vesselType: string | null;
+  regionId: string | null;
   latitude: number | null;
   longitude: number | null;
   occurredAt: string | null;
@@ -276,13 +279,50 @@ export type AnomalyResult = {
   anomalies: Anomaly[];
 };
 // limit 0 (the default) = no cap; the operator sees every open finding.
-export const getAnomalies = (opts?: { type?: string; severity?: string; limit?: number }) => {
+export const getAnomalies = (opts?: { type?: string; severity?: string; limit?: number; regionIds?: string[] }) => {
   const q = new URLSearchParams();
   if (opts?.type) q.set("type", opts.type);
   if (opts?.severity) q.set("severity", opts.severity);
+  if (opts?.regionIds && opts.regionIds.length) q.set("regionIds", opts.regionIds.join(","));
   q.set("limit", String(opts?.limit ?? 0));
   return apiGet<AnomalyResult>(`/api/anomalies?${q.toString()}`);
 };
+
+// Region-scoped analysis controls (D-62).
+export const runAnomalyAnalysis = (regionIds: string[]) =>
+  apiPost<{ status: string; found?: number; inserted?: number; regions?: number; error?: string }>("/api/anomalies/run", { regionIds });
+
+export async function clearAnomalies(regionIds?: string[]): Promise<{ status: string; cleared?: number; error?: string }> {
+  const q = regionIds && regionIds.length ? `?regionIds=${encodeURIComponent(regionIds.join(","))}` : "";
+  const res = await authedFetch(`/api/anomalies${q}`, { method: "DELETE" });
+  const data = (await res.json().catch(() => ({}))) as { status: string; cleared?: number; error?: string };
+  if (!res.ok) throw new Error(data?.error || `${res.status} ${res.statusText}`);
+  return data;
+}
+
+export type AnalysisSnapshotMeta = {
+  id: string;
+  name: string;
+  regionIds: string[] | null;
+  regionNames: string | null;
+  counts: { severity: string; n: number }[];
+  findingCount: number;
+  createdAt: string;
+};
+export type AnalysisSnapshot = AnalysisSnapshotMeta & { findings: Anomaly[] };
+
+export const saveAnalysisSnapshot = (name: string, regionIds?: string[]) =>
+  apiPost<{ status: string; id?: string; findingCount?: number; error?: string }>("/api/anomalies/snapshots", { name, regionIds });
+export const getAnalysisSnapshots = () =>
+  apiGet<{ status: string; snapshots: AnalysisSnapshotMeta[] }>("/api/anomalies/snapshots");
+export const getAnalysisSnapshot = (id: string) =>
+  apiGet<{ status: string; snapshot: AnalysisSnapshot }>(`/api/anomalies/snapshots/${id}`);
+export async function deleteAnalysisSnapshot(id: string): Promise<{ status: string; error?: string }> {
+  const res = await authedFetch(`/api/anomalies/snapshots/${id}`, { method: "DELETE" });
+  const data = (await res.json().catch(() => ({}))) as { status: string; error?: string };
+  if (!res.ok) throw new Error(data?.error || `${res.status} ${res.statusText}`);
+  return data;
+}
 
 // ---- Per-vessel enrichment ----
 export type VesselEnrichment = {
