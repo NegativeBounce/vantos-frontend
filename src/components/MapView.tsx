@@ -233,9 +233,9 @@ export default function MapView({
   onVesselClick,
   onBoxSelect,
   flyTo,
-  drawMode = false,
+  drawBoxMode = false,
   drawVertices = null,
-  onDrawPoint,
+  onBoxDrawn,
   footprint = null,
 }: {
   vessels: VesselPosition[];
@@ -256,9 +256,9 @@ export default function MapView({
   onVesselClick: (v: PickedVessel) => void;
   onBoxSelect: (vessels: PickedVessel[]) => void;
   flyTo?: FlyTo;
-  drawMode?: boolean;
+  drawBoxMode?: boolean;
   drawVertices?: [number, number][] | null;
-  onDrawPoint?: (lng: number, lat: number) => void;
+  onBoxDrawn?: (bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number }) => void;
   footprint?: Footprint;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -272,8 +272,8 @@ export default function MapView({
   const onRegionClickRef = useRef(onRegionClick);
   const boxModeRef = useRef(boxSelectMode);
   const pickModeRef = useRef(pickMode);
-  const drawModeRef = useRef(drawMode);
-  const onDrawPointRef = useRef(onDrawPoint);
+  const drawBoxModeRef = useRef(drawBoxMode);
+  const onBoxDrawnRef = useRef(onBoxDrawn);
   const fittedRegionsRef = useRef<string>("");
   const lastFlyKeyRef = useRef<number>(0);
   useEffect(() => { onMapClickRef.current = onMapClick; }, [onMapClick]);
@@ -284,8 +284,8 @@ export default function MapView({
   useEffect(() => { onRegionClickRef.current = onRegionClick; }, [onRegionClick]);
   useEffect(() => { boxModeRef.current = boxSelectMode; }, [boxSelectMode]);
   useEffect(() => { pickModeRef.current = pickMode; }, [pickMode]);
-  useEffect(() => { drawModeRef.current = drawMode; }, [drawMode]);
-  useEffect(() => { onDrawPointRef.current = onDrawPoint; }, [onDrawPoint]);
+  useEffect(() => { drawBoxModeRef.current = drawBoxMode; }, [drawBoxMode]);
+  useEffect(() => { onBoxDrawnRef.current = onBoxDrawn; }, [onBoxDrawn]);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -399,7 +399,7 @@ export default function MapView({
         map.getCanvas().style.cursor = boxModeRef.current || pickModeRef.current ? "crosshair" : "";
       });
       map.on("click", "regions-fill", (e) => {
-        if (pickModeRef.current || boxModeRef.current || drawModeRef.current) return;
+        if (pickModeRef.current || boxModeRef.current || drawBoxModeRef.current) return;
         // Let a more specific feature own the click if one is here.
         const hit = map.queryRenderedFeatures(e.point, { layers: ["clusters", "vessels-circle", "gaps-dot", "gnss-fill", "pois-dot"] });
         if (hit.length) return;
@@ -425,7 +425,7 @@ export default function MapView({
       });
       const gnssPopup = new mapboxgl.Popup({ closeButton: false, offset: 8, className: "vantos-popup" });
       map.on("click", "gnss-fill", (e) => {
-        if (drawModeRef.current) return;
+        if (drawBoxModeRef.current) return;
         const f = e.features?.[0];
         if (!f) return;
         const p = f.properties as { region?: string; severityPct?: number; severityColor?: string; confidence?: string; distinctAircraft?: number; dropEvents?: number };
@@ -540,7 +540,7 @@ export default function MapView({
       });
       const gapPopup = new mapboxgl.Popup({ closeButton: false, offset: 12, className: "vantos-popup" });
       map.on("click", "gaps-dot", (e) => {
-        if (drawModeRef.current) return;
+        if (drawBoxModeRef.current) return;
         const f = e.features?.[0];
         if (!f) return;
         const p = f.properties as { mmsi?: string; name?: string; confidence?: string; minutesAgo?: number; tier?: string };
@@ -583,7 +583,7 @@ export default function MapView({
         paint: { "text-color": "#cbd5e1", "text-halo-color": "#0b0f14", "text-halo-width": 1.2 },
       });
       map.on("click", "pois-dot", (e) => {
-        if (boxModeRef.current || drawModeRef.current) return;
+        if (boxModeRef.current || drawBoxModeRef.current) return;
         const f = e.features?.[0];
         if (!f) return;
         const p = f.properties as { id?: string; name?: string; type?: string };
@@ -595,7 +595,7 @@ export default function MapView({
 
       // Click a cluster → zoom in.
       map.on("click", "clusters", (e) => {
-        if (drawModeRef.current) return;
+        if (drawBoxModeRef.current) return;
         const f = map.queryRenderedFeatures(e.point, { layers: ["clusters"] })[0];
         if (!f) return;
         const clusterId = (f.properties as { cluster_id: number }).cluster_id;
@@ -606,7 +606,7 @@ export default function MapView({
       });
       // Click a single vessel → select.
       map.on("click", "vessels-circle", (e) => {
-        if (boxModeRef.current || drawModeRef.current) return;
+        if (boxModeRef.current || drawBoxModeRef.current) return;
         const f = e.features?.[0];
         if (!f) return;
         const p = f.properties as { mmsi?: string; name?: string };
@@ -650,7 +650,7 @@ export default function MapView({
 
       // Click empty map → in draw mode add a polygon vertex; otherwise drop a search center.
       map.on("click", (e) => {
-        if (drawModeRef.current) { onDrawPointRef.current?.(e.lngLat.lng, e.lngLat.lat); return; }
+        if (drawBoxModeRef.current) return; // box drawing is handled by the drag handler
         if (boxModeRef.current) return;
         const hit = map.queryRenderedFeatures(e.point, { layers: ["clusters", "vessels-circle"] });
         if (hit.length) return;
@@ -688,6 +688,16 @@ export default function MapView({
       const start = startPt;
       startPt = null;
       if (!start) return;
+      // Region box-draw: convert the dragged rectangle to a geographic bbox.
+      if (drawBoxModeRef.current) {
+        if (Math.abs(cur.x - start.x) < 6 || Math.abs(cur.y - start.y) < 6) return; // ignore tiny drags
+        const a = map.unproject(start), b = map.unproject(cur);
+        onBoxDrawnRef.current?.({
+          minLat: Math.min(a.lat, b.lat), maxLat: Math.max(a.lat, b.lat),
+          minLon: Math.min(a.lng, b.lng), maxLon: Math.max(a.lng, b.lng),
+        });
+        return;
+      }
       const feats = map.queryRenderedFeatures([start, cur], { layers: ["vessels-circle"] });
       const seen = new Set<string>();
       const out: PickedVessel[] = [];
@@ -699,7 +709,7 @@ export default function MapView({
       if (out.length) onBoxSelectRef.current(out);
     };
     const onDown = (e: MouseEvent) => {
-      if (!boxModeRef.current || e.button !== 0) return;
+      if (!(boxModeRef.current || drawBoxModeRef.current) || e.button !== 0) return;
       e.preventDefault();
       map.dragPan.disable();
       startPt = pos(e);
@@ -852,8 +862,8 @@ export default function MapView({
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    map.getCanvas().style.cursor = boxSelectMode || pickMode || drawMode ? "crosshair" : "";
-  }, [boxSelectMode, pickMode, drawMode]);
+    map.getCanvas().style.cursor = boxSelectMode || pickMode || drawBoxMode ? "crosshair" : "";
+  }, [boxSelectMode, pickMode, drawBoxMode]);
 
   // Snap to a vessel chosen from a list. Bumping flyTo.key re-triggers the ease.
   useEffect(() => {
