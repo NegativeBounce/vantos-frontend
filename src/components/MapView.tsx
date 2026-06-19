@@ -25,6 +25,7 @@ export type FlyTo = { lng: number; lat: number; zoom?: number; key: number } | n
 export type Footprint = {
   bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number };
   tiles: { lng: number; lat: number; radiusKm: number }[];
+  path?: number[][] | null; // operator-drawn corridor the tiles follow
 } | null;
 
 export type GnssCellView = {
@@ -143,6 +144,19 @@ function footprintData(fp: Footprint): GeoJSON.FeatureCollection {
     },
   ];
   for (const t of fp.tiles) features.push({ ...circleFeature(t.lng, t.lat, t.radiusKm), properties: { kind: "tile" } });
+  if (fp.path && fp.path.length >= 2) {
+    features.push({ type: "Feature", properties: { kind: "path" }, geometry: { type: "LineString", coordinates: fp.path as [number, number][] } });
+  }
+  return { type: "FeatureCollection", features };
+}
+
+// In-progress footprint path (operator drawing the corridor): a line through the waypoints
+// + a dot per waypoint.
+function pathData(verts: [number, number][] | null): GeoJSON.FeatureCollection {
+  if (!verts || !verts.length) return EMPTY;
+  const features: GeoJSON.Feature[] = [];
+  if (verts.length >= 2) features.push({ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: verts } });
+  verts.forEach((v) => features.push({ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: v } }));
   return { type: "FeatureCollection", features };
 }
 
@@ -237,6 +251,9 @@ export default function MapView({
   drawVertices = null,
   onBoxDrawn,
   footprint = null,
+  pathMode = false,
+  pathVertices = null,
+  onPathPoint,
 }: {
   vessels: VesselPosition[];
   selection: Selection;
@@ -260,6 +277,9 @@ export default function MapView({
   drawVertices?: [number, number][] | null;
   onBoxDrawn?: (bbox: { minLat: number; minLon: number; maxLat: number; maxLon: number }) => void;
   footprint?: Footprint;
+  pathMode?: boolean;
+  pathVertices?: [number, number][] | null;
+  onPathPoint?: (lng: number, lat: number) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
@@ -274,6 +294,8 @@ export default function MapView({
   const pickModeRef = useRef(pickMode);
   const drawBoxModeRef = useRef(drawBoxMode);
   const onBoxDrawnRef = useRef(onBoxDrawn);
+  const pathModeRef = useRef(pathMode);
+  const onPathPointRef = useRef(onPathPoint);
   const fittedRegionsRef = useRef<string>("");
   const lastFlyKeyRef = useRef<number>(0);
   useEffect(() => { onMapClickRef.current = onMapClick; }, [onMapClick]);
@@ -286,6 +308,8 @@ export default function MapView({
   useEffect(() => { pickModeRef.current = pickMode; }, [pickMode]);
   useEffect(() => { drawBoxModeRef.current = drawBoxMode; }, [drawBoxMode]);
   useEffect(() => { onBoxDrawnRef.current = onBoxDrawn; }, [onBoxDrawn]);
+  useEffect(() => { pathModeRef.current = pathMode; }, [pathMode]);
+  useEffect(() => { onPathPointRef.current = onPathPoint; }, [onPathPoint]);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -378,7 +402,7 @@ export default function MapView({
         regionPopup.remove();
       };
       map.on("mousemove", "regions-fill", (e) => {
-        if (pickModeRef.current || boxModeRef.current) return;
+        if (pickModeRef.current || boxModeRef.current || drawBoxModeRef.current || pathModeRef.current) return;
         const f = e.features?.[0];
         if (!f) return;
         const p = f.properties as { rid?: string; name?: string };
@@ -399,7 +423,7 @@ export default function MapView({
         map.getCanvas().style.cursor = boxModeRef.current || pickModeRef.current ? "crosshair" : "";
       });
       map.on("click", "regions-fill", (e) => {
-        if (pickModeRef.current || boxModeRef.current || drawBoxModeRef.current) return;
+        if (pickModeRef.current || boxModeRef.current || drawBoxModeRef.current || pathModeRef.current) return;
         // Let a more specific feature own the click if one is here.
         const hit = map.queryRenderedFeatures(e.point, { layers: ["clusters", "vessels-circle", "gaps-dot", "gnss-fill", "pois-dot"] });
         if (hit.length) return;
@@ -425,7 +449,7 @@ export default function MapView({
       });
       const gnssPopup = new mapboxgl.Popup({ closeButton: false, offset: 8, className: "vantos-popup" });
       map.on("click", "gnss-fill", (e) => {
-        if (drawBoxModeRef.current) return;
+        if (drawBoxModeRef.current || pathModeRef.current) return;
         const f = e.features?.[0];
         if (!f) return;
         const p = f.properties as { region?: string; severityPct?: number; severityColor?: string; confidence?: string; distinctAircraft?: number; dropEvents?: number };
@@ -540,7 +564,7 @@ export default function MapView({
       });
       const gapPopup = new mapboxgl.Popup({ closeButton: false, offset: 12, className: "vantos-popup" });
       map.on("click", "gaps-dot", (e) => {
-        if (drawBoxModeRef.current) return;
+        if (drawBoxModeRef.current || pathModeRef.current) return;
         const f = e.features?.[0];
         if (!f) return;
         const p = f.properties as { mmsi?: string; name?: string; confidence?: string; minutesAgo?: number; tier?: string };
@@ -583,7 +607,7 @@ export default function MapView({
         paint: { "text-color": "#cbd5e1", "text-halo-color": "#0b0f14", "text-halo-width": 1.2 },
       });
       map.on("click", "pois-dot", (e) => {
-        if (boxModeRef.current || drawBoxModeRef.current) return;
+        if (boxModeRef.current || drawBoxModeRef.current || pathModeRef.current) return;
         const f = e.features?.[0];
         if (!f) return;
         const p = f.properties as { id?: string; name?: string; type?: string };
@@ -595,7 +619,7 @@ export default function MapView({
 
       // Click a cluster → zoom in.
       map.on("click", "clusters", (e) => {
-        if (drawBoxModeRef.current) return;
+        if (drawBoxModeRef.current || pathModeRef.current) return;
         const f = map.queryRenderedFeatures(e.point, { layers: ["clusters"] })[0];
         if (!f) return;
         const clusterId = (f.properties as { cluster_id: number }).cluster_id;
@@ -606,7 +630,7 @@ export default function MapView({
       });
       // Click a single vessel → select.
       map.on("click", "vessels-circle", (e) => {
-        if (boxModeRef.current || drawBoxModeRef.current) return;
+        if (boxModeRef.current || drawBoxModeRef.current || pathModeRef.current) return;
         const f = e.features?.[0];
         if (!f) return;
         const p = f.properties as { mmsi?: string; name?: string };
@@ -627,6 +651,26 @@ export default function MapView({
         id: "footprint-bbox", type: "line", source: "footprint",
         filter: ["==", ["get", "kind"], "bbox"],
         paint: { "line-color": "#f8fafc", "line-width": 1.5, "line-dasharray": [4, 3], "line-opacity": 0.7 },
+      });
+      map.addLayer({
+        id: "footprint-path", type: "line", source: "footprint",
+        filter: ["==", ["get", "kind"], "path"],
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": "#34d399", "line-width": 2, "line-opacity": 0.9 },
+      });
+
+      // In-progress footprint path (operator drawing the corridor).
+      map.addSource("path", { type: "geojson", data: EMPTY });
+      map.addLayer({
+        id: "path-line", type: "line", source: "path",
+        filter: ["==", ["geometry-type"], "LineString"],
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": "#38bdf8", "line-width": 2 },
+      });
+      map.addLayer({
+        id: "path-verts", type: "circle", source: "path",
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: { "circle-radius": 4, "circle-color": "#0b0f14", "circle-stroke-color": "#38bdf8", "circle-stroke-width": 2 },
       });
 
       // In-progress custom-region polygon (drawn vertices live in Workspace state).
@@ -650,7 +694,8 @@ export default function MapView({
 
       // Click empty map → in draw mode add a polygon vertex; otherwise drop a search center.
       map.on("click", (e) => {
-        if (drawBoxModeRef.current) return; // box drawing is handled by the drag handler
+        if (pathModeRef.current) { onPathPointRef.current?.(e.lngLat.lng, e.lngLat.lat); return; }
+        if (drawBoxModeRef.current || pathModeRef.current) return; // box drawing is handled by the drag handler
         if (boxModeRef.current) return;
         const hit = map.queryRenderedFeatures(e.point, { layers: ["clusters", "vessels-circle"] });
         if (hit.length) return;
@@ -862,8 +907,19 @@ export default function MapView({
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    map.getCanvas().style.cursor = boxSelectMode || pickMode || drawBoxMode ? "crosshair" : "";
-  }, [boxSelectMode, pickMode, drawBoxMode]);
+    const apply = () => {
+      const src = map.getSource("path") as mapboxgl.GeoJSONSource | undefined;
+      if (src) src.setData(pathData(pathVertices));
+    };
+    if (map.getSource("path")) apply();
+    else map.once("load", apply);
+  }, [pathVertices]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    map.getCanvas().style.cursor = boxSelectMode || pickMode || drawBoxMode || pathMode ? "crosshair" : "";
+  }, [boxSelectMode, pickMode, drawBoxMode, pathMode]);
 
   // Snap to a vessel chosen from a list. Bumping flyTo.key re-triggers the ease.
   useEffect(() => {

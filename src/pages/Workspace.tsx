@@ -16,31 +16,65 @@ const SAT_TILE_STEP_KM = 70;
 const SAT_TILE_MAX = 24; // mirror backend SAT_TILE_MAX_TILES — region auto-tiles up to this
 const SAT_CREDITS_PER_TILE = 10;
 type Bbox = { minLat: number; minLon: number; maxLat: number; maxLon: number };
-function satGrid(bbox: Bbox): { rows: number; cols: number } {
+// Grid that, when over the cap, scales down (preserving aspect) so tiles SPREAD over the
+// whole box instead of clustering in the south rows. Mirrors backend tileBbox.
+function bboxGrid(bbox: Bbox): { rows: number; cols: number; total: number; capped: boolean } {
   const midLat = (bbox.minLat + bbox.maxLat) / 2;
   const latSpanKm = Math.abs(bbox.maxLat - bbox.minLat) * 111;
   const lonSpanKm = Math.abs(bbox.maxLon - bbox.minLon) * 111 * Math.cos((midLat * Math.PI) / 180);
-  return {
-    rows: Math.max(1, Math.ceil(latSpanKm / SAT_TILE_STEP_KM)),
-    cols: Math.max(1, Math.ceil(lonSpanKm / SAT_TILE_STEP_KM)),
-  };
+  let rows = Math.max(1, Math.ceil(latSpanKm / SAT_TILE_STEP_KM));
+  let cols = Math.max(1, Math.ceil(lonSpanKm / SAT_TILE_STEP_KM));
+  const total = rows * cols;
+  let capped = false;
+  if (total > SAT_TILE_MAX) {
+    capped = true;
+    const scale = Math.sqrt(SAT_TILE_MAX / total);
+    rows = Math.max(1, Math.round(rows * scale));
+    cols = Math.max(1, Math.round(cols * scale));
+    while (rows * cols > SAT_TILE_MAX) { if (cols >= rows && cols > 1) cols--; else if (rows > 1) rows--; else break; }
+  }
+  return { rows, cols, total, capped };
 }
 function estimateSatTiles(bbox: Bbox): { tiles: number; total: number; capped: boolean } {
-  const { rows, cols } = satGrid(bbox);
-  const total = rows * cols;
-  return { tiles: Math.min(total, SAT_TILE_MAX), total, capped: total > SAT_TILE_MAX };
+  const g = bboxGrid(bbox);
+  return { tiles: g.rows * g.cols, total: g.total, capped: g.capped };
 }
-// Actual satellite tile centers (mirrors backend tileBbox) — for the footprint overlay.
+// Satellite tile centers for the bbox grid (footprint overlay / fallback).
 function satTileCenters(bbox: Bbox): { lng: number; lat: number; radiusKm: number }[] {
-  const { rows, cols } = satGrid(bbox);
+  const { rows, cols } = bboxGrid(bbox);
   const out: { lng: number; lat: number; radiusKm: number }[] = [];
   for (let r = 0; r < rows; r++) {
     const lat = rows === 1 ? (bbox.minLat + bbox.maxLat) / 2 : bbox.minLat + ((r + 0.5) / rows) * (bbox.maxLat - bbox.minLat);
     for (let c = 0; c < cols; c++) {
       const lng = cols === 1 ? (bbox.minLon + bbox.maxLon) / 2 : bbox.minLon + ((c + 0.5) / cols) * (bbox.maxLon - bbox.minLon);
       out.push({ lng, lat, radiusKm: 50 });
-      if (out.length >= SAT_TILE_MAX) return out;
     }
+  }
+  return out;
+}
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371, toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+// Tile centers spaced along an operator-drawn path (mirrors backend pathTiles).
+function pathTileCenters(path: number[][]): { lng: number; lat: number; radiusKm: number }[] {
+  if (!path.length) return [];
+  const out = [{ lng: path[0][0], lat: path[0][1], radiusKm: 50 }];
+  let acc = 0;
+  for (let i = 1; i < path.length && out.length < SAT_TILE_MAX; i++) {
+    const lng0 = path[i - 1][0], lat0 = path[i - 1][1], lng1 = path[i][0], lat1 = path[i][1];
+    const segKm = haversineKm(lat0, lng0, lat1, lng1);
+    if (segKm === 0) continue;
+    let d = 0;
+    while (acc + (segKm - d) >= SAT_TILE_STEP_KM && out.length < SAT_TILE_MAX) {
+      d += SAT_TILE_STEP_KM - acc;
+      const t = d / segKm;
+      out.push({ lng: lng0 + (lng1 - lng0) * t, lat: lat0 + (lat1 - lat0) * t, radiusKm: 50 });
+      acc = 0;
+    }
+    acc += segKm - d;
   }
   return out;
 }
@@ -189,6 +223,11 @@ export default function Workspace() {
   const [areaPickMode, setAreaPickMode] = useState(false);
   const [pullState, setPullState] = useState<Record<string, string>>({});
   const [footprintRegionId, setFootprintRegionId] = useState<string | null>(null);
+  // Footprint-path drawing: click waypoints along a corridor → satellite tiles follow it.
+  const [pathMode, setPathMode] = useState(false);
+  const [pathRegionId, setPathRegionId] = useState<string | null>(null);
+  const [pathVerts, setPathVerts] = useState<[number, number][]>([]);
+  const [pathBusy, setPathBusy] = useState(false);
 
   // Custom-region drawing (transient): drag a box of any size → name + colour → save.
   // The region is one box; the satellite pull auto-tiles it (bounded by the credit cap).
@@ -261,6 +300,35 @@ export default function Workspace() {
     }
     await setRegionCollection(r.id, { collectAisSatellite: checked });
     qc.invalidateQueries({ queryKey: ["regions"] });
+  }
+
+  // Footprint-path drawing (D-63): trace the corridor; the satellite tiles follow it.
+  function startDefineFootprint(regionId: string) {
+    setRegionModalId(null);
+    setBoxMode(false);
+    setAreaPickMode(false);
+    setPathRegionId(regionId);
+    setPathVerts([]);
+    setFootprintRegionId(regionId); // show the footprint overlay while drawing
+    setPathMode(true);
+  }
+  function cancelPath() {
+    setPathMode(false);
+    setPathVerts([]);
+    setPathRegionId(null);
+  }
+  async function finishFootprint() {
+    if (!pathRegionId || pathVerts.length < 2) return;
+    setPathBusy(true);
+    try {
+      await setRegionCollection(pathRegionId, { footprintPath: pathVerts });
+      await qc.invalidateQueries({ queryKey: ["regions"] });
+      cancelPath();
+    } catch { /* keep drawing on error */ } finally { setPathBusy(false); }
+  }
+  async function clearFootprint(regionId: string) {
+    await setRegionCollection(regionId, { footprintPath: null });
+    await qc.invalidateQueries({ queryKey: ["regions"] });
   }
 
   async function doDeleteRegion(id: string, name: string) {
@@ -465,9 +533,15 @@ export default function Workspace() {
   const regionModalRegion = coverageRegions.find((r) => r.id === regionModalId) ?? null;
   // Collection-footprint overlay: bbox + satellite tiles for the region being inspected.
   const footprintRegion = coverageRegions.find((r) => r.id === footprintRegionId) ?? null;
-  const footprint: Footprint = footprintRegion?.boundingBox
-    ? { bbox: footprintRegion.boundingBox, tiles: satTileCenters(footprintRegion.boundingBox) }
-    : null;
+  const footprint: Footprint = (() => {
+    const fr = footprintRegion;
+    if (!fr || !fr.boundingBox) return null;
+    const drawing = pathMode && pathRegionId === fr.id && pathVerts.length >= 1;
+    const savedPath = fr.footprintPath && fr.footprintPath.length >= 1 ? fr.footprintPath : null;
+    const path: number[][] | null = drawing ? pathVerts : savedPath;
+    const tiles = path ? pathTileCenters(path) : satTileCenters(fr.boundingBox);
+    return { bbox: fr.boundingBox, tiles, path };
+  })();
   // POI labels (only when the Places layer is on).
   const pois = useMemo(
     () =>
@@ -558,6 +632,9 @@ export default function Workspace() {
         drawVertices={drawForm ? boxRing : null}
         onBoxDrawn={handleBoxDrawn}
         footprint={footprint}
+        pathMode={pathMode}
+        pathVertices={pathMode ? pathVerts : null}
+        onPathPoint={(lng, lat) => setPathVerts((v) => [...v, [lng, lat] as [number, number]])}
       />
 
       {/* Tool tabs */}
@@ -609,6 +686,21 @@ export default function Workspace() {
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {/* Footprint-path draw panel (floating) */}
+      {pathMode && (
+        <div className="absolute bottom-4 left-1/2 z-30 w-80 -translate-x-1/2 rounded-lg border border-emerald-500/30 bg-black/80 p-3 text-xs backdrop-blur">
+          <div className="font-medium text-emerald-300">Define collection footprint</div>
+          <p className="mt-1 text-gray-400">Click along the corridor to add waypoints ({pathVerts.length}). Up to {SAT_TILE_MAX} satellite circles are spaced along this line.</p>
+          <div className="mt-2 flex gap-1.5">
+            <button onClick={() => setPathVerts((v) => v.slice(0, -1))} disabled={!pathVerts.length}
+              className="rounded border border-white/10 px-2 py-1 hover:bg-white/10 disabled:opacity-40">Undo</button>
+            <button onClick={finishFootprint} disabled={pathVerts.length < 2 || pathBusy}
+              className="rounded bg-emerald-600 px-2 py-1 font-medium text-white hover:bg-emerald-500 disabled:opacity-40">{pathBusy ? "Saving…" : `Save footprint (${pathVerts.length})`}</button>
+            <button onClick={cancelPath} className="ml-auto rounded border border-white/10 px-2 py-1 hover:bg-white/10">Cancel</button>
+          </div>
         </div>
       )}
 
@@ -1300,11 +1392,22 @@ export default function Workspace() {
               <input type="checkbox" checked={footprintRegionId === r.id} onChange={(e) => setFootprintRegionId(e.target.checked ? r.id : null)} />
               Show collection footprint <span className="text-[10px] text-gray-500">(coverage area)</span>
             </label>
-            {footprintRegionId === r.id && r.boundingBox && (
-              <p className="ml-6 text-[10px] leading-snug text-gray-500">
-                <span className="text-slate-200">▭ white dashed</span> = AIS collection box · <span className="text-emerald-300">◯ green dashed</span> = {satTileCenters(r.boundingBox!).length} satellite tile{satTileCenters(r.boundingBox!).length === 1 ? "" : "s"} (pulled when Sat is on). Redraw so the footprint straddles the traffic lane.
-              </p>
-            )}
+            {footprintRegionId === r.id && r.boundingBox && (() => {
+              const tiles = r.footprintPath && r.footprintPath.length ? pathTileCenters(r.footprintPath) : satTileCenters(r.boundingBox!);
+              return (
+                <p className="ml-6 text-[10px] leading-snug text-gray-500">
+                  <span className="text-slate-200">▭ box</span> = AIS collection area · <span className="text-emerald-300">◯ green</span> = {tiles.length} satellite tile{tiles.length === 1 ? "" : "s"}{r.footprintPath?.length ? " along your drawn path" : " (auto-grid — define a path to follow the lane)"} (pulled when Sat is on).
+                </p>
+              );
+            })()}
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              <button onClick={() => startDefineFootprint(r.id)} className="rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[11px] text-emerald-200 hover:bg-emerald-500/20">
+                {r.footprintPath?.length ? "Redraw footprint path" : "Define collection footprint"}
+              </button>
+              {r.footprintPath?.length ? (
+                <button onClick={() => clearFootprint(r.id)} className="rounded border border-white/10 px-2 py-1 text-[11px] hover:bg-white/10">Clear path</button>
+              ) : null}
+            </div>
 
             <div className="mt-3 border-t border-white/10 pt-2 text-[11px] text-gray-400">Data collection</div>
             <div className="mt-1 flex flex-col gap-1.5 text-[12px]">

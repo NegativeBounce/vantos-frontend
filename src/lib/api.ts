@@ -92,6 +92,7 @@ export type Region = {
   isCustom: boolean;
   analyze: boolean;
   analyzeUntil: string | null;
+  footprintPath: number[][] | null;
   lastAisPullAt: string | null;
   aisPullCadenceMinutes: number;
 };
@@ -110,7 +111,7 @@ export async function deleteRegion(id: string): Promise<{ status: string; error?
 
 export async function setRegionCollection(
   id: string,
-  input: { collectAis?: boolean; collectAdsb?: boolean; collectAisSatellite?: boolean; aisPullCadenceMinutes?: number; analyze?: boolean; analyzeDurationMinutes?: number | null }
+  input: { collectAis?: boolean; collectAdsb?: boolean; collectAisSatellite?: boolean; aisPullCadenceMinutes?: number; analyze?: boolean; analyzeDurationMinutes?: number | null; footprintPath?: number[][] | null }
 ): Promise<{ status: string; region?: Region; error?: string }> {
   const res = await authedFetch(`/api/regions/${id}`, {
     method: "PATCH",
