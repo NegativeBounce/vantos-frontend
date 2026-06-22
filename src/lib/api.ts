@@ -364,13 +364,13 @@ export type BannedVessel = {
   portCalls: Record<string, string | number | boolean>[];
   banRecord: Record<string, string | number | boolean> | null;
 };
+// Banned vessels we have a row for but no mappable position ("in records, no position").
 export type BannedUnlocated = {
   name: string | null;
   mmsi: string | null;
   imo: string | null;
   flag: string | null;
-  inDb: boolean; // we have a vessel row (enriched/seen) but no mappable position
-  record: Record<string, string | number | boolean>;
+  record: Record<string, string | number | boolean> | null;
 };
 export const getBannedVessels = () =>
   apiGet<{
@@ -379,7 +379,6 @@ export const getBannedVessels = () =>
     count: number;
     vessels: BannedVessel[];
     unlocatedTotal: number;
-    unlocatedInDb: number;
     unlocated: BannedUnlocated[];
     error?: string;
   }>("/api/banned-vessels");

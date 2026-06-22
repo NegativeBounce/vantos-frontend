@@ -865,8 +865,7 @@ export default function Workspace() {
               {banned.data?.status === "ok" && (banned.data?.unlocatedTotal ?? 0) > 0 && (
                 <div className="mt-1.5 border-t border-white/10 pt-1.5">
                   <button onClick={() => setShowUnlocated((s) => !s)} className="text-left text-gray-300 hover:text-white">
-                    {showUnlocated ? "▾" : "▸"} <span className="font-mono">{banned.data?.unlocatedTotal ?? 0}</span> banned vessel{(banned.data?.unlocatedTotal ?? 0) === 1 ? "" : "s"} not on map (no stored position)
-                    {(banned.data?.unlocatedInDb ?? 0) > 0 && <span className="text-gray-500"> · {banned.data?.unlocatedInDb} in our records</span>}
+                    {showUnlocated ? "▾" : "▸"} <span className="font-mono">{banned.data?.unlocatedTotal ?? 0}</span> banned vessel{(banned.data?.unlocatedTotal ?? 0) === 1 ? "" : "s"} in our records with no position
                   </button>
                   {showUnlocated && (
                     <ul className="mt-1 max-h-56 space-y-0.5 overflow-y-auto pr-1">
@@ -876,9 +875,7 @@ export default function Workspace() {
                             {u.name ?? "(no name)"}
                             <span className="ml-1 font-mono text-[10px] text-gray-500">{u.mmsi ?? u.imo ?? ""}{u.flag ? ` · ${u.flag}` : ""}</span>
                           </span>
-                          <span className={`shrink-0 rounded px-1 text-[9px] ${u.inDb ? "bg-amber-500/20 text-amber-300" : "bg-white/10 text-gray-400"}`}>
-                            {u.inDb ? "in records · no position" : "not collected"}
-                          </span>
+                          <span className="shrink-0 rounded bg-amber-500/20 px-1 text-[9px] text-amber-300">no position</span>
                         </li>
                       ))}
                       {(banned.data?.unlocatedTotal ?? 0) > (banned.data?.unlocated?.length ?? 0) && (
