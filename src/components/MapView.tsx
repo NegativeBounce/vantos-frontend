@@ -617,7 +617,7 @@ export default function MapView({
         paint: {
           "circle-radius": 5,
           // Association colour (when set) wins; else fresh = cyan / stale (>6h) = muted slate.
-          "circle-color": ["case", ["to-boolean", ["get", "color"]], ["get", "color"], ["case", ["get", "stale"], "#64748b", "#38bdf8"]],
+          "circle-color": ["case", ["to-boolean", ["get", "color"]], ["get", "color"], ["case", ["get", "stale"], "#64748b", "#38bdf8"]] as mapboxgl.ExpressionSpecification,
           "circle-opacity": ["case", ["get", "stale"], 0.6, 1],
           "circle-stroke-color": "#0b0f14",
           "circle-stroke-width": 1,

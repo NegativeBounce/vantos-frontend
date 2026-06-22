@@ -16,7 +16,7 @@ const ASSOC_DIMS: { dim: AssociationDim; label: string }[] = [
   { dim: "class_society", label: "Classification society" },
   { dim: "nav_status", label: "Status" },
 ];
-const ASSOC_DIM_LABEL: Record<AssociationDim, string> = Object.fromEntries(ASSOC_DIMS.map((d) => [d.dim, d.label])) as Record<AssociationDim, string>;
+const ASSOC_DIM_LABEL: Record<AssociationDim, string> = Object.fromEntries(ASSOC_DIMS.map((d) => [d.dim, d.label] as [string, string])) as Record<AssociationDim, string>;
 // Distinct-ish palette for colour-by (top values get a colour; the rest fall back to grey).
 const ASSOC_PALETTE = ["#38bdf8", "#f59e0b", "#22c55e", "#ef4444", "#a855f7", "#eab308", "#ec4899", "#14b8a6", "#fb923c", "#60a5fa", "#f472b6", "#4ade80"];
 function dimValue(v: VesselPosition, dim: AssociationDim): string {
