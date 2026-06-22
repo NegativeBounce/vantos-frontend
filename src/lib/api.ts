@@ -364,10 +364,25 @@ export type BannedVessel = {
   portCalls: Record<string, string | number | boolean>[];
   banRecord: Record<string, string | number | boolean> | null;
 };
+export type BannedUnlocated = {
+  name: string | null;
+  mmsi: string | null;
+  imo: string | null;
+  flag: string | null;
+  inDb: boolean; // we have a vessel row (enriched/seen) but no mappable position
+  record: Record<string, string | number | boolean>;
+};
 export const getBannedVessels = () =>
-  apiGet<{ status: string; banListSize: number; count: number; vessels: BannedVessel[]; error?: string }>(
-    "/api/banned-vessels"
-  );
+  apiGet<{
+    status: string;
+    banListSize: number;
+    count: number;
+    vessels: BannedVessel[];
+    unlocatedTotal: number;
+    unlocatedInDb: number;
+    unlocated: BannedUnlocated[];
+    error?: string;
+  }>("/api/banned-vessels");
 
 // On-demand port-call history for one vessel (spends credits) — the banned-dot click action.
 export const getVesselPortCalls = (mmsi: string) =>

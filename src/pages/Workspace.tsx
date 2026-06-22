@@ -470,6 +470,7 @@ export default function Workspace() {
   const banned = useQuery({ queryKey: ["banned"], queryFn: getBannedVessels, enabled: bannedOn, refetchInterval: 120000 });
   const bannedList = useMemo(() => (bannedOn ? banned.data?.vessels ?? [] : []), [bannedOn, banned.data]);
   const [bannedPortMmsi, setBannedPortMmsi] = useState<string | null>(null);
+  const [showUnlocated, setShowUnlocated] = useState(false);
   const bannedPortsQ = useQuery({
     queryKey: ["bannedPorts", bannedPortMmsi],
     queryFn: () => getVesselPortCalls(bannedPortMmsi as string),
@@ -861,6 +862,32 @@ export default function Workspace() {
               <div className="mt-1 text-gray-400">
                 <span className="text-red-400">●</span> blinking = active (last fix ≤ 6h) · <span className="text-red-400/40">●</span> dimmed = historic. Click a dot for details + port history (spends credits).
               </div>
+              {banned.data?.status === "ok" && (banned.data?.unlocatedTotal ?? 0) > 0 && (
+                <div className="mt-1.5 border-t border-white/10 pt-1.5">
+                  <button onClick={() => setShowUnlocated((s) => !s)} className="text-left text-gray-300 hover:text-white">
+                    {showUnlocated ? "▾" : "▸"} <span className="font-mono">{banned.data?.unlocatedTotal ?? 0}</span> banned vessel{(banned.data?.unlocatedTotal ?? 0) === 1 ? "" : "s"} not on map (no stored position)
+                    {(banned.data?.unlocatedInDb ?? 0) > 0 && <span className="text-gray-500"> · {banned.data?.unlocatedInDb} in our records</span>}
+                  </button>
+                  {showUnlocated && (
+                    <ul className="mt-1 max-h-56 space-y-0.5 overflow-y-auto pr-1">
+                      {(banned.data?.unlocated ?? []).map((u, i) => (
+                        <li key={i} className="flex items-center justify-between gap-2 rounded bg-white/5 px-1.5 py-1">
+                          <span className="truncate text-gray-200" title={u.name ?? u.mmsi ?? u.imo ?? ""}>
+                            {u.name ?? "(no name)"}
+                            <span className="ml-1 font-mono text-[10px] text-gray-500">{u.mmsi ?? u.imo ?? ""}{u.flag ? ` · ${u.flag}` : ""}</span>
+                          </span>
+                          <span className={`shrink-0 rounded px-1 text-[9px] ${u.inDb ? "bg-amber-500/20 text-amber-300" : "bg-white/10 text-gray-400"}`}>
+                            {u.inDb ? "in records · no position" : "not collected"}
+                          </span>
+                        </li>
+                      ))}
+                      {(banned.data?.unlocatedTotal ?? 0) > (banned.data?.unlocated?.length ?? 0) && (
+                        <li className="px-1.5 py-1 text-[10px] text-gray-500">+{(banned.data?.unlocatedTotal ?? 0) - (banned.data?.unlocated?.length ?? 0)} more not shown</li>
+                      )}
+                    </ul>
+                  )}
+                </div>
+              )}
               <div className="mt-0.5 text-red-300/80">Data Docked determination — corroborate with an authoritative sanctions list.</div>
             </div>
           )}
