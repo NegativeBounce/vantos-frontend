@@ -5,7 +5,82 @@ import MapView, { type PickedVessel, type ViewportBbox, type FlyTo, type Footpri
 import Modal from "../components/Modal";
 import MonitorButton from "../components/MonitorButton";
 import { usePersistentState } from "../lib/persist";
-import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, runAnomalyAnalysis, clearAnomalies, saveAnalysisSnapshot, getAnalysisSnapshots, getAnalysisSnapshot, deleteAnalysisSnapshot, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, createRegion, deleteRegion, getIngestionRuns, type AreaSearchResult, type Anomaly, type Region } from "../lib/api";
+import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, runAnomalyAnalysis, clearAnomalies, saveAnalysisSnapshot, getAnalysisSnapshots, getAnalysisSnapshot, deleteAnalysisSnapshot, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, createRegion, deleteRegion, getIngestionRuns, type AreaSearchResult, type Anomaly, type Region, type VesselEnrichment } from "../lib/api";
+
+// Extended-enrichment sections (D-64): MoU inspections, port-calls, ban-list status. Field
+// names from Data Docked aren't fully verified, so we render whatever scalar fields each
+// record carries rather than assuming a fixed shape. Shown below the vessel particulars in
+// both enrich panels (selected-vessel + anomaly detail).
+function ScalarRows({ rec }: { rec: Record<string, string | number | boolean> }) {
+  return (
+    <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5">
+      {Object.entries(rec).map(([k, v]) => (
+        <div key={k} className="flex justify-between gap-2">
+          <dt className="text-gray-500">{k}</dt>
+          <dd className="truncate text-gray-200" title={String(v)}>{String(v)}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function EnrichSectionBlock({ title, section }: { title: string; section: VesselEnrichment["mou"] }) {
+  if (!section) return null; // call wasn't made (e.g. no credentials)
+  return (
+    <div className="mt-2 border-t border-white/10 pt-2">
+      <div className="mb-1 font-medium text-sky-300">{title}</div>
+      {section.error ? (
+        <p className="text-amber-400/90">Unavailable: {section.error}</p>
+      ) : section.records.length === 0 ? (
+        <p className="text-gray-500">No records.</p>
+      ) : (
+        <div className="space-y-1.5">
+          {section.records.slice(0, 25).map((rec, i) => (
+            <div key={i} className="rounded bg-white/5 p-1.5">
+              <ScalarRows rec={rec} />
+            </div>
+          ))}
+          {section.records.length > 25 && (
+            <p className="text-[10px] text-gray-500">+{section.records.length - 25} more not shown</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// MoU + port-calls + ban status. Rendered after the particulars grid in each enrich panel.
+function EnrichExtras({ data }: { data: VesselEnrichment }) {
+  const ban = data.banStatus;
+  return (
+    <>
+      {ban && (
+        <div className="mt-2 border-t border-white/10 pt-2">
+          <div className="mb-1 font-medium text-sky-300">Sanctions / ban-list</div>
+          {ban.error ? (
+            <p className="text-amber-400/90">Unavailable: {ban.error}</p>
+          ) : ban.listed === true ? (
+            <p className="font-medium text-red-400">⚠ Listed on Data Docked ban-list</p>
+          ) : ban.listed === false ? (
+            <p className="text-emerald-400/90">Not on Data Docked ban-list</p>
+          ) : (
+            <p className="text-gray-400">Status undetermined from the returned data.</p>
+          )}
+          {ban.records.length > 0 && (
+            <div className="mt-1 space-y-1.5">
+              {ban.records.slice(0, 10).map((rec, i) => (
+                <div key={i} className="rounded bg-red-500/10 p-1.5"><ScalarRows rec={rec} /></div>
+              ))}
+            </div>
+          )}
+          <p className="mt-1 text-[10px] text-gray-600">Data Docked determination — corroborate with an authoritative sanctions list before action.</p>
+        </div>
+      )}
+      <EnrichSectionBlock title="MoU inspections / detentions" section={data.mou} />
+      <EnrichSectionBlock title="Recent port calls" section={data.portCalls} />
+    </>
+  );
+}
 
 // Overlay-colour palette for custom regions (default first = the baseline green).
 const REGION_PALETTE = ["#22c55e", "#38bdf8", "#f59e0b", "#ef4444", "#a855f7", "#eab308", "#ec4899", "#14b8a6"];
@@ -835,6 +910,7 @@ export default function Workspace() {
                             ))}
                           </dl>
                         )}
+                        <EnrichExtras data={enrich.data} />
                       </>
                     ) : null}
                   </div>
@@ -1136,6 +1212,7 @@ export default function Workspace() {
                                           ))}
                                         </dl>
                                       )}
+                                      <EnrichExtras data={enrich.data} />
                                     </>
                                   ) : null}
                               </div>

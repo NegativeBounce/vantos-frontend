@@ -327,6 +327,9 @@ export async function deleteAnalysisSnapshot(id: string): Promise<{ status: stri
 }
 
 // ---- Per-vessel enrichment ----
+export type EnrichScalarRecord = Record<string, string | number | boolean>;
+export type EnrichSection = { records: EnrichScalarRecord[]; error: string | null };
+export type EnrichBanStatus = { listed: boolean | null; records: EnrichScalarRecord[]; error: string | null };
 export type VesselEnrichment = {
   status: string;
   mmsi: string;
@@ -334,6 +337,10 @@ export type VesselEnrichment = {
   detail: unknown;
   creditsSpent: number | null;
   cachedAt: string;
+  // Extended enrichment (D-64) — null until the core info call succeeds.
+  mou?: EnrichSection | null;
+  portCalls?: EnrichSection | null;
+  banStatus?: EnrichBanStatus | null;
   error?: string;
 };
 export const enrichVessel = (mmsi: string) =>
