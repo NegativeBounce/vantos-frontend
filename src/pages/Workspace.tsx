@@ -5,7 +5,7 @@ import MapView, { type PickedVessel, type ViewportBbox, type FlyTo, type Footpri
 import Modal from "../components/Modal";
 import MonitorButton from "../components/MonitorButton";
 import { usePersistentState } from "../lib/persist";
-import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, runAnomalyAnalysis, clearAnomalies, saveAnalysisSnapshot, getAnalysisSnapshots, getAnalysisSnapshot, deleteAnalysisSnapshot, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, createRegion, deleteRegion, getIngestionRuns, type AreaSearchResult, type Anomaly, type Region, type VesselEnrichment } from "../lib/api";
+import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, runAnomalyAnalysis, clearAnomalies, saveAnalysisSnapshot, getAnalysisSnapshots, getAnalysisSnapshot, deleteAnalysisSnapshot, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, createRegion, deleteRegion, getIngestionRuns, getBannedVessels, getVesselPortCalls, type AreaSearchResult, type Anomaly, type Region, type VesselEnrichment } from "../lib/api";
 
 // Extended-enrichment sections (D-64): MoU inspections, port-calls, ban-list status. Field
 // names from Data Docked aren't fully verified, so we render whatever scalar fields each
@@ -464,6 +464,30 @@ export default function Workspace() {
     [gnssOn, gnss.data]
   );
 
+  // Banned / sanctioned vessels layer (ban-list ∩ our DB). Port history is fetched on demand
+  // when a red dot is clicked (spends credits).
+  const [bannedOn, setBannedOn] = usePersistentState("bannedOn", false);
+  const banned = useQuery({ queryKey: ["banned"], queryFn: getBannedVessels, enabled: bannedOn, refetchInterval: 120000 });
+  const bannedList = useMemo(() => (bannedOn ? banned.data?.vessels ?? [] : []), [bannedOn, banned.data]);
+  const [bannedPortMmsi, setBannedPortMmsi] = useState<string | null>(null);
+  const bannedPortsQ = useQuery({
+    queryKey: ["bannedPorts", bannedPortMmsi],
+    queryFn: () => getVesselPortCalls(bannedPortMmsi as string),
+    enabled: !!bannedPortMmsi,
+  });
+  const bannedPorts = useMemo(
+    () =>
+      bannedPortMmsi
+        ? {
+            mmsi: bannedPortMmsi,
+            loading: bannedPortsQ.isLoading,
+            error: bannedPortsQ.data?.error ?? (bannedPortsQ.isError ? "request failed" : null),
+            records: bannedPortsQ.data?.records ?? [],
+          }
+        : null,
+    [bannedPortMmsi, bannedPortsQ.isLoading, bannedPortsQ.isError, bannedPortsQ.data]
+  );
+
   // Dark-shipping / AIS-gap indicators (opt-in layer).
   const [gapsOn, setGapsOn] = usePersistentState("gapsOn", false);
   const [verifySat, setVerifySat] = usePersistentState("verifySat", false);
@@ -712,6 +736,9 @@ export default function Workspace() {
         pathMode={pathMode}
         pathVertices={pathMode ? pathVerts : null}
         onPathPoint={(lng, lat) => setPathVerts((v) => [...v, [lng, lat] as [number, number]])}
+        banned={bannedList}
+        bannedPorts={bannedPorts}
+        onBannedClick={(mmsi) => setBannedPortMmsi(mmsi)}
       />
 
       {/* Tool tabs */}
@@ -818,6 +845,23 @@ export default function Workspace() {
                 severity: <span className="text-green-400">●</span>&lt;2% <span className="text-yellow-400">●</span>2–10% <span className="text-orange-400">●</span>10–25% <span className="text-red-400">●</span>≥25% · opacity = confidence.
               </div>
               <div className="mt-0.5 text-orange-300/80">Not a confirmed jamming/spoofing detection.</div>
+            </div>
+          )}
+          <label className="mt-2 flex items-center gap-2 text-gray-300">
+            <input type="checkbox" checked={bannedOn} onChange={(e) => setBannedOn(e.target.checked)} />
+            Banned vessels <span className="text-[10px] text-red-400/70">(Data Docked ban-list ∩ our DB)</span>
+          </label>
+          {bannedOn && (
+            <div className="ml-6 rounded bg-red-500/10 p-1.5 text-[10px] leading-snug text-red-300/90">
+              <div>
+                {banned.isLoading ? "Loading banned vessels…"
+                  : banned.data?.status === "error" ? `Unavailable: ${banned.data?.error}`
+                  : <><span className="font-mono">{bannedList.length}</span> banned vessel{bannedList.length === 1 ? "" : "s"} with a stored position · ban-list size <span className="font-mono">{banned.data?.banListSize ?? "—"}</span></>}
+              </div>
+              <div className="mt-1 text-gray-400">
+                <span className="text-red-400">●</span> blinking = active (last fix ≤ 6h) · <span className="text-red-400/40">●</span> dimmed = historic. Click a dot for details + port history (spends credits).
+              </div>
+              <div className="mt-0.5 text-red-300/80">Data Docked determination — corroborate with an authoritative sanctions list.</div>
             </div>
           )}
           <label className="mt-2 flex items-center gap-2 text-gray-500">

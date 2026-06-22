@@ -346,6 +346,35 @@ export type VesselEnrichment = {
 export const enrichVessel = (mmsi: string) =>
   apiGet<VesselEnrichment>(`/api/vessels/${encodeURIComponent(mmsi)}/enrich`);
 
+// ---- Banned / sanctioned vessels (ban-list ∩ our DB) for the map layer ----
+export type BannedVessel = {
+  mmsi: string | null;
+  imo: string | null;
+  name: string | null;
+  type: string | null;
+  flag: string | null;
+  cargo: string | null;
+  navStatus: string | null;
+  destination: string | null;
+  latitude: number;
+  longitude: number;
+  dataSource: string | null;
+  positionReceived: string | null;
+  ingestedAt: string | null;
+  portCalls: Record<string, string | number | boolean>[];
+  banRecord: Record<string, string | number | boolean> | null;
+};
+export const getBannedVessels = () =>
+  apiGet<{ status: string; banListSize: number; count: number; vessels: BannedVessel[]; error?: string }>(
+    "/api/banned-vessels"
+  );
+
+// On-demand port-call history for one vessel (spends credits) — the banned-dot click action.
+export const getVesselPortCalls = (mmsi: string) =>
+  apiGet<{ status: string; mmsi: string; records: Record<string, string | number | boolean>[]; error: string | null }>(
+    `/api/vessels/${encodeURIComponent(mmsi)}/port-calls`
+  );
+
 export type AreaSearchResult = {
   status: string;
   region?: string;

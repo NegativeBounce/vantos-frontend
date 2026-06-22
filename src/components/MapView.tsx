@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import mapboxgl from "mapbox-gl";
-import type { VesselPosition, AisGap } from "../lib/api";
+import type { VesselPosition, AisGap, BannedVessel } from "../lib/api";
 
 mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN ?? "";
 
@@ -78,6 +78,76 @@ function toVesselGeoJSON(vessels: VesselPosition[]): GeoJSON.FeatureCollection {
         };
       }),
   };
+}
+
+// Banned/sanctioned vessels. "fresh" (active) = last fix within 6h → the dot blinks; older
+// (historic) → dimmed, static. Full detail is looked up by MMSI for the click popup.
+const BANNED_FRESH_MS = 6 * 60 * 60_000;
+function bannedData(banned: BannedVessel[] | null): GeoJSON.FeatureCollection {
+  if (!banned || !banned.length) return EMPTY;
+  const now = Date.now();
+  return {
+    type: "FeatureCollection",
+    features: banned
+      .filter((v) => Number.isFinite(v.latitude) && Number.isFinite(v.longitude))
+      .map((v) => {
+        const ts = v.ingestedAt ? Date.parse(v.ingestedAt) : NaN;
+        const fresh = Number.isFinite(ts) ? now - ts <= BANNED_FRESH_MS : false;
+        return {
+          type: "Feature" as const,
+          properties: { mmsi: v.mmsi ?? "", name: v.name ?? v.mmsi ?? "unknown", flag: v.flag ?? "", fresh },
+          geometry: { type: "Point" as const, coordinates: [v.longitude, v.latitude] },
+        };
+      }),
+  };
+}
+
+type BannedPorts = { mmsi: string; loading: boolean; error: string | null; records: Record<string, string | number | boolean>[] } | null;
+
+function esc(s: unknown): string {
+  return String(s ?? "").replace(/[&<>"]/g, (c) =>
+    c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&quot;"
+  );
+}
+
+// Full detail card for a clicked banned vessel: free identity fields + collection date, then
+// the on-demand port history (loading / error / rows) once the click triggers the fetch.
+function bannedPopupHTML(v: BannedVessel, ports: BannedPorts): string {
+  const row = (k: string, val: unknown) =>
+    val === null || val === undefined || String(val).trim() === ""
+      ? ""
+      : `<div style="display:flex;justify-content:space-between;gap:10px"><span style="color:#9ca3af">${k}</span><span style="color:#e5e7eb;text-align:right">${esc(val)}</span></div>`;
+  const date = v.positionReceived || v.ingestedAt;
+  const dateStr = date ? new Date(date).toUTCString().replace("GMT", "UTC") : "—";
+  let portsHtml = "";
+  if (!ports || ports.mmsi !== (v.mmsi ?? "")) portsHtml = `<div style="color:#9ca3af;margin-top:4px">Click the dot to load port history.</div>`;
+  else if (ports.loading) portsHtml = `<div style="color:#9ca3af;margin-top:4px">Loading port history…</div>`;
+  else if (ports.error) portsHtml = `<div style="color:#fbbf24;margin-top:4px">Port history unavailable: ${esc(ports.error)}</div>`;
+  else if (!ports.records.length) portsHtml = `<div style="color:#9ca3af;margin-top:4px">No port calls returned.</div>`;
+  else {
+    const items = ports.records
+      .slice(0, 10)
+      .map((r) => {
+        const vals = Object.entries(r).map(([k, val]) => `${esc(k)}: ${esc(val)}`).join(" · ");
+        return `<li style="margin:1px 0;color:#d1d5db">${vals}</li>`;
+      })
+      .join("");
+    portsHtml = `<div style="margin-top:4px;color:#9ca3af">Last ${Math.min(10, ports.records.length)} port calls</div><ol style="margin:2px 0 0;padding-left:16px">${items}</ol>`;
+  }
+  return `<div style="font:12px system-ui;color:#e5e7eb;max-width:320px">
+    <div style="color:#ef4444;font-weight:600">⚠ Banned / sanctioned vessel</div>
+    <div style="font-weight:600;margin:2px 0">${esc(v.name ?? v.mmsi ?? "unknown")}</div>
+    ${row("Collected", dateStr)}
+    ${row("MMSI", v.mmsi)}
+    ${row("IMO", v.imo)}
+    ${row("Flag", v.flag)}
+    ${row("Type", v.type)}
+    ${row("Cargo", v.cargo)}
+    ${row("Nav status", v.navStatus)}
+    ${row("Destination", v.destination)}
+    <div style="border-top:1px solid rgba(255,255,255,.1);margin-top:5px;padding-top:4px">${portsHtml}</div>
+    <div style="color:#6b7280;margin-top:5px;font-size:10px">Data Docked ban-list determination — corroborate with an authoritative sanctions list.</div>
+  </div>`;
 }
 
 function circleFeature(lng: number, lat: number, radiusKm: number): GeoJSON.Feature {
@@ -254,6 +324,9 @@ export default function MapView({
   pathMode = false,
   pathVertices = null,
   onPathPoint,
+  banned = null,
+  bannedPorts = null,
+  onBannedClick,
 }: {
   vessels: VesselPosition[];
   selection: Selection;
@@ -280,6 +353,9 @@ export default function MapView({
   pathMode?: boolean;
   pathVertices?: [number, number][] | null;
   onPathPoint?: (lng: number, lat: number) => void;
+  banned?: BannedVessel[] | null;
+  bannedPorts?: BannedPorts;
+  onBannedClick?: (mmsi: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
@@ -298,6 +374,16 @@ export default function MapView({
   const onPathPointRef = useRef(onPathPoint);
   const fittedRegionsRef = useRef<string>("");
   const lastFlyKeyRef = useRef<number>(0);
+  // Banned-vessel layer: lookup by MMSI for the click popup, the popup itself + which MMSI it
+  // shows, the click callback, and the blink phase.
+  const bannedByMmsiRef = useRef<Map<string, BannedVessel>>(new Map());
+  const bannedPopupRef = useRef<mapboxgl.Popup | null>(null);
+  const bannedPopupMmsiRef = useRef<string | null>(null);
+  const onBannedClickRef = useRef(onBannedClick);
+  const bannedPortsRef = useRef<BannedPorts>(bannedPorts);
+  const blinkOnRef = useRef(true);
+  useEffect(() => { onBannedClickRef.current = onBannedClick; }, [onBannedClick]);
+  useEffect(() => { bannedPortsRef.current = bannedPorts; }, [bannedPorts]);
   useEffect(() => { onMapClickRef.current = onMapClick; }, [onMapClick]);
   useEffect(() => { onVesselClickRef.current = onVesselClick; }, [onVesselClick]);
   useEffect(() => { onBoxSelectRef.current = onBoxSelect; }, [onBoxSelect]);
@@ -694,6 +780,50 @@ export default function MapView({
         paint: { "circle-radius": 4, "circle-color": "#0b0f14", "circle-stroke-color": "#38bdf8", "circle-stroke-width": 2 },
       });
 
+      // Banned/sanctioned vessels (on top). Red dots: fresh (≤6h) ones blink via an interval
+      // toggling opacity/radius (see the blink effect); historic ones render dim + static.
+      map.addSource("banned", { type: "geojson", data: EMPTY });
+      map.addLayer({
+        id: "banned-halo", type: "circle", source: "banned",
+        filter: ["==", ["get", "fresh"], true],
+        paint: { "circle-radius": 13, "circle-color": "#ef4444", "circle-opacity": 0.18 },
+      });
+      map.addLayer({
+        id: "banned-dot", type: "circle", source: "banned",
+        paint: {
+          "circle-radius": ["case", ["get", "fresh"], 7, 5],
+          "circle-color": "#ef4444",
+          "circle-opacity": ["case", ["get", "fresh"], 1, 0.35],
+          "circle-stroke-color": "#7f1d1d",
+          "circle-stroke-width": 1.5,
+        },
+      });
+      map.addLayer({
+        id: "banned-label", type: "symbol", source: "banned",
+        layout: { "text-field": ["get", "name"], "text-size": 10, "text-offset": [0, 1.1], "text-anchor": "top", "text-optional": true },
+        paint: { "text-color": "#fecaca", "text-halo-color": "#0b0f14", "text-halo-width": 1.2 },
+      });
+      const bannedPopup = new mapboxgl.Popup({ closeButton: true, offset: 12, className: "vantos-popup", maxWidth: "340px" });
+      bannedPopupRef.current = bannedPopup;
+      bannedPopup.on("close", () => { bannedPopupMmsiRef.current = null; });
+      map.on("click", "banned-dot", (e) => {
+        if (boxModeRef.current || drawBoxModeRef.current || pathModeRef.current) return;
+        const f = e.features?.[0];
+        if (!f) return;
+        const mmsi = String((f.properties as { mmsi?: string }).mmsi ?? "");
+        const v = bannedByMmsiRef.current.get(mmsi);
+        if (!v) return;
+        bannedPopupMmsiRef.current = mmsi;
+        // Show cached ports if we already have them for this vessel; otherwise "Loading…" while
+        // the click triggers the fetch below.
+        const cur = bannedPortsRef.current;
+        const ports: BannedPorts = cur && cur.mmsi === mmsi ? cur : { mmsi, loading: true, error: null, records: [] };
+        bannedPopup.setLngLat((f.geometry as GeoJSON.Point).coordinates as [number, number]).setHTML(bannedPopupHTML(v, ports)).addTo(map);
+        if (mmsi && onBannedClickRef.current) onBannedClickRef.current(mmsi); // fetch port history
+      });
+      map.on("mouseenter", "banned-dot", () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", "banned-dot", () => (map.getCanvas().style.cursor = boxModeRef.current || pickModeRef.current ? "crosshair" : ""));
+
       // Click empty map → in draw mode add a polygon vertex; otherwise drop a search center.
       map.on("click", (e) => {
         if (pathModeRef.current) { onPathPointRef.current?.(e.lngLat.lng, e.lngLat.lat); return; }
@@ -933,6 +1063,43 @@ export default function MapView({
     if (map.isStyleLoaded()) go();
     else map.once("load", go);
   }, [flyTo]);
+
+  // Banned vessels → source data + the MMSI lookup the click popup reads from.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    bannedByMmsiRef.current = new Map((banned ?? []).map((v) => [v.mmsi ?? "", v]));
+    const apply = () => {
+      const src = map.getSource("banned") as mapboxgl.GeoJSONSource | undefined;
+      if (src) src.setData(bannedData(banned));
+    };
+    if (map.getSource("banned")) apply();
+    else map.once("load", apply);
+  }, [banned]);
+
+  // Blink the fresh (active, ≤6h) banned dots; historic ones stay dim + static.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      const map = mapRef.current;
+      if (!map || !map.getLayer("banned-dot")) return;
+      blinkOnRef.current = !blinkOnRef.current;
+      const on = blinkOnRef.current;
+      try {
+        map.setPaintProperty("banned-dot", "circle-opacity", ["case", ["get", "fresh"], on ? 1 : 0.25, 0.35]);
+        map.setPaintProperty("banned-dot", "circle-radius", ["case", ["get", "fresh"], on ? 8 : 5, 5]);
+        map.setPaintProperty("banned-halo", "circle-opacity", on ? 0.3 : 0.06);
+      } catch { /* style not ready yet */ }
+    }, 650);
+    return () => window.clearInterval(id);
+  }, []);
+
+  // When the on-demand port history resolves, refresh the open banned popup if it's that vessel.
+  useEffect(() => {
+    const popup = bannedPopupRef.current;
+    if (!popup || !bannedPorts || !popup.isOpen() || bannedPopupMmsiRef.current !== bannedPorts.mmsi) return;
+    const v = bannedByMmsiRef.current.get(bannedPorts.mmsi);
+    if (v) popup.setHTML(bannedPopupHTML(v, bannedPorts));
+  }, [bannedPorts]);
 
   return <div ref={containerRef} className="absolute inset-0" style={{ minHeight: "100%" }} />;
 }
