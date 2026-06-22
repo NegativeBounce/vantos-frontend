@@ -181,7 +181,13 @@ const CADENCE_OPTIONS = [
   { v: 180, l: "3h" },
   { v: 60, l: "1h" },
 ];
-type Tool = "layers" | "vessels" | "area" | "regions" | "gaps" | "analysis" | "activity" | "assoc";
+type Tool = "vlayers" | "vessels" | "area" | "regions" | "gaps" | "analysis" | "activity" | "assoc" | "gnss" | "map";
+type Domain = "vessel" | "gnss";
+const DOMAINS: { key: Domain | "security"; label: string; stub?: boolean }[] = [
+  { key: "vessel", label: "Vessel Intelligence" },
+  { key: "gnss", label: "GNSS / Signals" },
+  { key: "security", label: "Security", stub: true },
+];
 
 // Collection-activity labels: map an ingestion endpoint to a friendly source + cost class.
 const ENDPOINT_INFO: Record<string, { label: string; paid: boolean }> = {
@@ -307,6 +313,8 @@ export default function Workspace() {
   const [aisVisible, setAisVisible] = usePersistentState("aisVisible", true);
   const [tracksOn, setTracksOn] = usePersistentState("tracksOn", false);
   const [placesOn, setPlacesOn] = usePersistentState("placesOn", false);
+  // Which intelligence domain's tools the rail shows (D-67). Vessel Intelligence default.
+  const [domain, setDomain] = usePersistentState<Domain>("domain", "vessel");
   const [boxMode, setBoxMode] = usePersistentState("boxMode", false);
   const [hidden, setHidden] = usePersistentState<string[]>("hidden", []);
   const [clearedAt, setClearedAt] = usePersistentState<number | null>("clearedAt", null);
@@ -772,16 +780,37 @@ export default function Workspace() {
     }
   }
 
-  const TOOLS: { key: Tool; label: string; badge?: number }[] = [
-    { key: "layers", label: "Layers" },
-    { key: "vessels", label: "Vessels", badge: displayed.length },
-    { key: "area", label: "Area Search" },
+  // Tools grouped by intelligence domain (D-67). The domain rail picks which set shows;
+  // platform tools (Regions/Map/Activity) serve every domain and always show.
+  type ToolDef = { key: Tool; label: string; badge?: number };
+  const DOMAIN_TOOLS: Record<Domain, ToolDef[]> = {
+    vessel: [
+      { key: "vlayers", label: "Layers" },
+      { key: "vessels", label: "Vessels", badge: displayed.length },
+      { key: "area", label: "Area Search" },
+      { key: "gaps", label: "AIS Gaps", badge: gapsOn ? gapList?.length ?? 0 : undefined },
+      { key: "analysis", label: "Vessel Analysis", badge: anomalyList.length || undefined },
+      { key: "assoc", label: "Associations" },
+    ],
+    gnss: [
+      { key: "gnss", label: "Interference" },
+    ],
+  };
+  const PLATFORM_TOOLS: ToolDef[] = [
     { key: "regions", label: "Regions", badge: regionCount },
-    { key: "gaps", label: "AIS Gaps", badge: gapsOn ? gapList?.length ?? 0 : undefined },
-    { key: "analysis", label: "Vessel Analysis", badge: anomalyList.length || undefined },
-    { key: "assoc", label: "Associations" },
+    { key: "map", label: "Map" },
     { key: "activity", label: "Activity" },
   ];
+  const renderToolChip = (t: ToolDef) => (
+    <button
+      key={t.key}
+      onClick={() => setTool(tool === t.key ? null : t.key)}
+      className={`rounded px-2.5 py-1 ${tool === t.key ? "bg-sky-500/20 text-sky-300" : "text-gray-300 hover:bg-white/10"}`}
+    >
+      {t.label}
+      {t.badge !== undefined && <span className="ml-1 font-mono text-gray-500">{t.badge}</span>}
+    </button>
+  );
 
   return (
     <div className="relative h-full w-full">
@@ -816,18 +845,29 @@ export default function Workspace() {
         onBannedClick={(mmsi) => setBannedPortMmsi(mmsi)}
       />
 
-      {/* Tool tabs */}
-      <div className="absolute left-3 top-3 z-20 flex max-w-[calc(100%-1.5rem)] flex-wrap gap-1 rounded-lg border border-white/10 bg-black/60 p-1 text-xs backdrop-blur">
-        {TOOLS.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setTool(tool === t.key ? null : t.key)}
-            className={`rounded px-2.5 py-1 ${tool === t.key ? "bg-sky-500/20 text-sky-300" : "text-gray-300 hover:bg-white/10"}`}
-          >
-            {t.label}
-            {t.badge !== undefined && <span className="ml-1 font-mono text-gray-500">{t.badge}</span>}
-          </button>
-        ))}
+      {/* Domain rail + grouped tools */}
+      <div className="absolute left-3 top-3 z-20 flex max-w-[calc(100%-1.5rem)] flex-col gap-1 rounded-lg border border-white/10 bg-black/60 p-1 text-xs backdrop-blur">
+        {/* Intelligence-domain rail */}
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="px-1 text-[9px] font-semibold uppercase tracking-wider text-gray-500">Domain</span>
+          {DOMAINS.map((d) => (
+            <button
+              key={d.key}
+              disabled={d.stub}
+              onClick={() => { setDomain(d.key as Domain); setTool(null); }}
+              title={d.stub ? "Coming soon" : undefined}
+              className={`rounded px-2.5 py-1 ${d.stub ? "cursor-not-allowed text-gray-600" : domain === d.key ? "bg-sky-500/30 font-medium text-sky-200" : "text-gray-300 hover:bg-white/10"}`}
+            >
+              {d.label}{d.stub && " +"}
+            </button>
+          ))}
+        </div>
+        {/* Active domain's tools + platform tools */}
+        <div className="flex flex-wrap items-center gap-1 border-t border-white/10 pt-1">
+          {DOMAIN_TOOLS[domain].map(renderToolChip)}
+          <span className="mx-1 h-4 w-px self-center bg-white/15" />
+          {PLATFORM_TOOLS.map(renderToolChip)}
+        </div>
       </div>
 
       {/* Custom-region draw panel (floating) */}
@@ -883,8 +923,8 @@ export default function Workspace() {
         </div>
       )}
 
-      {tool === "layers" && (
-        <Modal title="Layers" onClose={() => setTool(null)}>
+      {tool === "vlayers" && (
+        <Modal title="Vessel layers" onClose={() => setTool(null)}>
           <label className="flex items-center gap-2 text-gray-300">
             <input type="checkbox" checked={aisVisible} onChange={(e) => setAisVisible(e.target.checked)} />
             AIS (AISStream + Data Docked)
@@ -897,10 +937,6 @@ export default function Workspace() {
             Tracks <span className="text-[10px] text-gray-500">(select one vessel · last 7d)</span>
           </label>
           <label className="mt-2 flex items-center gap-2 text-gray-300">
-            <input type="checkbox" checked={placesOn} onChange={(e) => setPlacesOn(e.target.checked)} />
-            Places <span className="text-[10px] text-gray-500">(chokepoints, straits & ports)</span>
-          </label>
-          <label className="mt-2 flex items-center gap-2 text-gray-300">
             <input type="checkbox" checked={gapsOn} onChange={(e) => setGapsOn(e.target.checked)} />
             Dark shipping / AIS gaps <span className="text-[10px] text-amber-400/70">(indicator only)</span>
           </label>
@@ -908,19 +944,6 @@ export default function Workspace() {
             <p className="mt-1 rounded bg-amber-500/10 p-1.5 text-[10px] leading-snug text-amber-300/90">
               AIS Gap / Dark Shipping Indicator — not a confirmed dark-vessel detection. See the AIS Gaps tab for the full caveat.
             </p>
-          )}
-          <label className="mt-2 flex items-center gap-2 text-gray-300">
-            <input type="checkbox" checked={gnssOn} onChange={(e) => setGnssOn(e.target.checked)} />
-            ADS-B / GNSS interference <span className="text-[10px] text-orange-400/70">(indicator only)</span>
-          </label>
-          {gnssOn && (
-            <div className="ml-6 rounded bg-orange-500/10 p-1.5 text-[10px] leading-snug text-orange-300/90">
-              <div>0.1° cell heatmap of aircraft reporting degraded nav integrity (NIC), 6h window. Enable <strong>ADS-B</strong> on a region (Regions tab) and pull it.</div>
-              <div className="mt-1 text-gray-400">
-                severity: <span className="text-green-400">●</span>&lt;2% <span className="text-yellow-400">●</span>2–10% <span className="text-orange-400">●</span>10–25% <span className="text-red-400">●</span>≥25% · opacity = confidence.
-              </div>
-              <div className="mt-0.5 text-orange-300/80">Not a confirmed jamming/spoofing detection.</div>
-            </div>
           )}
           <label className="mt-2 flex items-center gap-2 text-gray-300">
             <input type="checkbox" checked={bannedOn} onChange={(e) => setBannedOn(e.target.checked)} />
@@ -962,6 +985,34 @@ export default function Workspace() {
               <div className="mt-0.5 text-red-300/80">Data Docked determination — corroborate with an authoritative sanctions list.</div>
             </div>
           )}
+        </Modal>
+      )}
+
+      {tool === "gnss" && (
+        <Modal title="GNSS / Signals" onClose={() => setTool(null)}>
+          <label className="flex items-center gap-2 text-gray-300">
+            <input type="checkbox" checked={gnssOn} onChange={(e) => setGnssOn(e.target.checked)} />
+            ADS-B / GNSS interference <span className="text-[10px] text-orange-400/70">(indicator only)</span>
+          </label>
+          {gnssOn && (
+            <div className="ml-6 rounded bg-orange-500/10 p-1.5 text-[10px] leading-snug text-orange-300/90">
+              <div>0.1° cell heatmap of aircraft reporting degraded nav integrity (NIC), 6h window. Enable <strong>ADS-B</strong> on a region (Regions tab) and pull it.</div>
+              <div className="mt-1 text-gray-400">
+                severity: <span className="text-green-400">●</span>&lt;2% <span className="text-yellow-400">●</span>2–10% <span className="text-orange-400">●</span>10–25% <span className="text-red-400">●</span>≥25% · opacity = confidence.
+              </div>
+              <div className="mt-0.5 text-orange-300/80">Not a confirmed jamming/spoofing detection.</div>
+            </div>
+          )}
+          <p className="mt-2 text-[10px] text-gray-600">GNSS interference is aircraft-derived (ADS-B), kept as its own domain (not vessel data). Detection tuning is a known follow-up.</p>
+        </Modal>
+      )}
+
+      {tool === "map" && (
+        <Modal title="Map layers" onClose={() => setTool(null)}>
+          <label className="flex items-center gap-2 text-gray-300">
+            <input type="checkbox" checked={placesOn} onChange={(e) => setPlacesOn(e.target.checked)} />
+            Places <span className="text-[10px] text-gray-500">(chokepoints, straits & ports)</span>
+          </label>
           <label className="mt-2 flex items-center gap-2 text-gray-500">
             <input type="checkbox" disabled /> Imagery <span className="text-[10px]">(soon)</span>
           </label>
