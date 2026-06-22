@@ -73,7 +73,8 @@ function toVesselGeoJSON(vessels: VesselPosition[]): GeoJSON.FeatureCollection {
         const stale = Number.isFinite(ts) ? now - ts > STALE_AFTER_MS : false;
         return {
           type: "Feature",
-          properties: { mmsi: v.mmsi, name: v.name, type: v.type, dataSource: v.dataSource, stale },
+          // `color` (set by the Associations colour-by pass) overrides the fresh/stale colour.
+          properties: { mmsi: v.mmsi, name: v.name, type: v.type, dataSource: v.dataSource, stale, color: v.color ?? null },
           geometry: { type: "Point", coordinates: [v.longitude, v.latitude] },
         };
       }),
@@ -615,8 +616,8 @@ export default function MapView({
         filter: ["!", ["has", "point_count"]],
         paint: {
           "circle-radius": 5,
-          // Fresh = cyan; stale (last fix > 6h) = muted slate.
-          "circle-color": ["case", ["get", "stale"], "#64748b", "#38bdf8"],
+          // Association colour (when set) wins; else fresh = cyan / stale (>6h) = muted slate.
+          "circle-color": ["case", ["to-boolean", ["get", "color"]], ["get", "color"], ["case", ["get", "stale"], "#64748b", "#38bdf8"]],
           "circle-opacity": ["case", ["get", "stale"], 0.6, 1],
           "circle-stroke-color": "#0b0f14",
           "circle-stroke-width": 1,

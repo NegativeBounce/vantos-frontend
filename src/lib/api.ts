@@ -130,6 +130,10 @@ export type VesselPosition = {
   mmsi: string | null;
   name: string | null;
   type: string | null;
+  flag?: string | null;
+  owner?: string | null;
+  manager?: string | null;
+  classSociety?: string | null;
   latitude: number;
   longitude: number;
   speed: number | null;
@@ -137,9 +141,15 @@ export type VesselPosition = {
   dataSource: string | null;
   positionReceived: string | null;
   ingestedAt: string | null;
+  // Client-only (set by the Associations colour/filter pass before handing to the map).
+  color?: string;
+  hidden?: boolean;
 };
 export type Bbox = { minLat: number; minLon: number; maxLat: number; maxLon: number };
-export const getPositions = (bbox?: Bbox | null, showRegionIds?: string[]) => {
+// Association dimensions for colour/filter/grouping (must match the backend whitelist).
+export type AssociationDim = "flag" | "type" | "owner" | "manager" | "class_society" | "nav_status";
+export type AssociationFilter = { dim: AssociationDim; value: string };
+export const getPositions = (bbox?: Bbox | null, showRegionIds?: string[], filter?: AssociationFilter | null) => {
   const q = new URLSearchParams({ limit: "20000" });
   if (bbox) {
     q.set("minLat", String(bbox.minLat));
@@ -148,7 +158,12 @@ export const getPositions = (bbox?: Bbox | null, showRegionIds?: string[]) => {
     q.set("maxLon", String(bbox.maxLon));
   }
   if (showRegionIds && showRegionIds.length) q.set("showRegionIds", showRegionIds.join(","));
-  return apiGet<{ status: string; count: number; truncated: boolean; vessels: VesselPosition[] }>(`/api/positions?${q.toString()}`);
+  // Map a dimension to its positions query param (nav_status/class_society → camelCase).
+  if (filter) {
+    const key = filter.dim === "nav_status" ? "navStatus" : filter.dim === "class_society" ? "classSociety" : filter.dim;
+    q.set(key, filter.value);
+  }
+  return apiGet<{ status: string; count: number; truncated: boolean; filtered?: boolean; vessels: VesselPosition[] }>(`/api/positions?${q.toString()}`);
 };
 
 export type TrackPoint = {
@@ -419,6 +434,19 @@ export type LatestPosition = {
 export const getLatestPosition = (mmsi: string) =>
   apiGet<{ status: string; mmsi: string; position: LatestPosition | null; error?: string }>(
     `/api/vessels/${encodeURIComponent(mmsi)}/latest`
+  );
+
+// ---- Associations (group vessels by attribute) ----
+export type AssociationGroup = { value: string; count: number };
+export const getAssociations = (by: AssociationDim) =>
+  apiGet<{ status: string; by: string; distinct: number; total: number; groups: AssociationGroup[]; error?: string }>(
+    `/api/associations?by=${encodeURIComponent(by)}`
+  );
+// Build/extend a registry fleet from an association (server-side bulk add).
+export const fleetFromAssociation = (input: { groupId?: string; name?: string; color?: string; by: AssociationDim; value: string }) =>
+  apiPost<{ status: string; group?: { id: string; name: string }; added?: number; error?: string }>(
+    "/api/registry/fleet-from-association",
+    input
   );
 
 // ---- Vessel Registry (monitored vessels + groups) ----

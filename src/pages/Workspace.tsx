@@ -5,7 +5,27 @@ import MapView, { type PickedVessel, type ViewportBbox, type FlyTo, type Footpri
 import Modal from "../components/Modal";
 import MonitorButton from "../components/MonitorButton";
 import { usePersistentState } from "../lib/persist";
-import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, runAnomalyAnalysis, clearAnomalies, saveAnalysisSnapshot, getAnalysisSnapshots, getAnalysisSnapshot, deleteAnalysisSnapshot, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, createRegion, deleteRegion, getIngestionRuns, getBannedVessels, getVesselPortCalls, type AreaSearchResult, type Anomaly, type Region, type VesselEnrichment } from "../lib/api";
+import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, runAnomalyAnalysis, clearAnomalies, saveAnalysisSnapshot, getAnalysisSnapshots, getAnalysisSnapshot, deleteAnalysisSnapshot, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, createRegion, deleteRegion, getIngestionRuns, getBannedVessels, getVesselPortCalls, getAssociations, fleetFromAssociation, getMonitorGroups, type AreaSearchResult, type Anomaly, type Region, type VesselEnrichment, type VesselPosition, type AssociationDim, type AssociationFilter, type AssociationGroup } from "../lib/api";
+
+// Association dimensions for colour/filter/grouping (must match the backend whitelist).
+const ASSOC_DIMS: { dim: AssociationDim; label: string }[] = [
+  { dim: "owner", label: "Owner" },
+  { dim: "manager", label: "Manager" },
+  { dim: "flag", label: "Flag" },
+  { dim: "type", label: "Vessel type" },
+  { dim: "class_society", label: "Classification society" },
+  { dim: "nav_status", label: "Status" },
+];
+const ASSOC_DIM_LABEL: Record<AssociationDim, string> = Object.fromEntries(ASSOC_DIMS.map((d) => [d.dim, d.label])) as Record<AssociationDim, string>;
+// Distinct-ish palette for colour-by (top values get a colour; the rest fall back to grey).
+const ASSOC_PALETTE = ["#38bdf8", "#f59e0b", "#22c55e", "#ef4444", "#a855f7", "#eab308", "#ec4899", "#14b8a6", "#fb923c", "#60a5fa", "#f472b6", "#4ade80"];
+function dimValue(v: VesselPosition, dim: AssociationDim): string {
+  const raw =
+    dim === "flag" ? v.flag : dim === "type" ? v.type : dim === "owner" ? v.owner
+    : dim === "manager" ? v.manager : dim === "class_society" ? v.classSociety : v.navStatus;
+  const s = (raw ?? "").trim();
+  return s === "" ? "(unknown)" : s;
+}
 
 // Extended-enrichment sections (D-64): MoU inspections, port-calls, ban-list status. Field
 // names from Data Docked aren't fully verified, so we render whatever scalar fields each
@@ -161,7 +181,7 @@ const CADENCE_OPTIONS = [
   { v: 180, l: "3h" },
   { v: 60, l: "1h" },
 ];
-type Tool = "layers" | "vessels" | "area" | "regions" | "gaps" | "analysis" | "activity";
+type Tool = "layers" | "vessels" | "area" | "regions" | "gaps" | "analysis" | "activity" | "assoc";
 
 // Collection-activity labels: map an ingestion endpoint to a friendly source + cost class.
 const ENDPOINT_INFO: Record<string, { label: string; paid: boolean }> = {
@@ -292,9 +312,25 @@ export default function Workspace() {
   const [clearedAt, setClearedAt] = usePersistentState<number | null>("clearedAt", null);
   const [selected, setSelected] = usePersistentState<PickedVessel[]>("selected", []);
   const [selectedRegionIds, setSelectedRegionIds] = usePersistentState<string[]>("selectedRegionIds", []);
+
+  // Associations: colour the map by a dimension, filter to one value (server-side, global),
+  // group the whole DB by a dimension, and build registry fleets from a group. Declared
+  // before the positions query because the filter feeds it.
+  const [assocColorBy, setAssocColorBy] = usePersistentState<AssociationDim | "">("assocColorBy", "");
+  const [assocFilter, setAssocFilter] = usePersistentState<AssociationFilter | null>("assocFilter", null);
+  const [assocGroupBy, setAssocGroupBy] = usePersistentState<AssociationDim>("assocGroupBy", "owner");
+  const [fleetTarget, setFleetTarget] = useState<string>("new");
+  const [fleetMsg, setFleetMsg] = useState<string | null>(null);
+
   // Vessel positions for the current viewport. Regions you've "shown on map" (selected)
-  // also display their stored HISTORIC positions even when collection is off.
-  const positions = useQuery({ queryKey: ["positions", viewportKey, selectedRegionIds], queryFn: () => getPositions(viewport, selectedRegionIds), refetchInterval: 20000 });
+  // also display their stored HISTORIC positions even when collection is off. When an
+  // association filter is active we drop the viewport so the whole matching set shows globally.
+  const filterKey = assocFilter ? `${assocFilter.dim}=${assocFilter.value}` : "";
+  const positions = useQuery({
+    queryKey: ["positions", assocFilter ? "filtered" : viewportKey, selectedRegionIds, filterKey],
+    queryFn: () => getPositions(assocFilter ? null : viewport, selectedRegionIds, assocFilter),
+    refetchInterval: 20000,
+  });
 
   // Transient interaction/operation state — intentionally NOT persisted.
   const [areaPickMode, setAreaPickMode] = useState(false);
@@ -616,6 +652,43 @@ export default function Workspace() {
     [allVessels, hidden, clearedAt]
   );
 
+  // Colour-by: assign the top distinct values of the chosen dimension a palette colour
+  // (rest → grey), build a legend, and stamp each displayed vessel with its colour.
+  const assocColoring = useMemo(() => {
+    if (!assocColorBy) return { legend: [] as { value: string; color: string; count: number }[], hasOther: false, colorFor: (_v: VesselPosition) => undefined as string | undefined };
+    const counts = new Map<string, number>();
+    for (const v of displayed) { const k = dimValue(v, assocColorBy); counts.set(k, (counts.get(k) ?? 0) + 1); }
+    const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    const colorByVal = new Map<string, string>();
+    sorted.slice(0, ASSOC_PALETTE.length).forEach(([val], i) => colorByVal.set(val, ASSOC_PALETTE[i]));
+    const hasOther = sorted.length > ASSOC_PALETTE.length;
+    const legend = [...colorByVal.entries()].map(([value, color]) => ({ value, color, count: counts.get(value) ?? 0 }));
+    return { legend, hasOther, colorFor: (v: VesselPosition) => colorByVal.get(dimValue(v, assocColorBy)) ?? (hasOther ? "#6b7280" : undefined) };
+  }, [assocColorBy, displayed]);
+  const coloredDisplayed = useMemo(
+    () => (assocColorBy ? displayed.map((v) => ({ ...v, color: assocColoring.colorFor(v) })) : displayed),
+    [displayed, assocColorBy, assocColoring]
+  );
+
+  // Whole-DB association groups for the panel + registry fleets for the "add to fleet" target.
+  const assoc = useQuery({ queryKey: ["assoc", assocGroupBy], queryFn: () => getAssociations(assocGroupBy), enabled: tool === "assoc" });
+  const monitorGroups = useQuery({ queryKey: ["monitorGroups"], queryFn: getMonitorGroups, enabled: tool === "assoc" });
+  async function addToFleet(g: AssociationGroup) {
+    setFleetMsg(null);
+    try {
+      const res = await fleetFromAssociation({
+        groupId: fleetTarget === "new" ? undefined : fleetTarget,
+        by: assocGroupBy,
+        value: g.value,
+      });
+      if (res.status !== "ok") { setFleetMsg(`Error: ${res.error}`); return; }
+      setFleetMsg(`Added ${res.added ?? 0} vessel${res.added === 1 ? "" : "s"} to “${res.group?.name}”.`);
+      qc.invalidateQueries({ queryKey: ["monitorGroups"] });
+    } catch (e) {
+      setFleetMsg(`Error: ${(e as Error).message}`);
+    }
+  }
+
   // Split the canonical region list: coverage boxes (collected) vs POI labels.
   const allRegions = regions.data?.regions ?? [];
   const activeRegions = useMemo(() => allRegions.filter((r) => r.status === "active"), [allRegions]);
@@ -706,13 +779,14 @@ export default function Workspace() {
     { key: "regions", label: "Regions", badge: regionCount },
     { key: "gaps", label: "AIS Gaps", badge: gapsOn ? gapList?.length ?? 0 : undefined },
     { key: "analysis", label: "Vessel Analysis", badge: anomalyList.length || undefined },
+    { key: "assoc", label: "Associations" },
     { key: "activity", label: "Activity" },
   ];
 
   return (
     <div className="relative h-full w-full">
       <MapView
-        vessels={displayed}
+        vessels={coloredDisplayed}
         selection={center ? { lng: center.lng, lat: center.lat, radiusKm } : null}
         track={trackCoords}
         gaps={gapList}
@@ -891,6 +965,80 @@ export default function Workspace() {
           <label className="mt-2 flex items-center gap-2 text-gray-500">
             <input type="checkbox" disabled /> Imagery <span className="text-[10px]">(soon)</span>
           </label>
+        </Modal>
+      )}
+
+      {tool === "assoc" && (
+        <Modal title="Associations" onClose={() => setTool(null)}>
+          <p className="rounded bg-sky-500/10 p-1.5 text-[11px] leading-snug text-sky-300/90">
+            Group, colour &amp; filter vessels by shared attributes. Owner/Manager/Class come from enrichment (un-enriched vessels show as “(unknown)”); flag/type/status come from AIS.
+          </p>
+
+          <div className="mt-2">
+            <div className="text-[11px] text-gray-400">Colour map by</div>
+            <div className="mt-1 flex flex-wrap gap-1">
+              <button onClick={() => setAssocColorBy("")} className={`rounded border px-2 py-0.5 text-[11px] ${!assocColorBy ? "border-sky-400 bg-sky-500/20 text-sky-300" : "border-white/10 hover:bg-white/10"}`}>Off</button>
+              {ASSOC_DIMS.map((d) => (
+                <button key={d.dim} onClick={() => setAssocColorBy(d.dim)} className={`rounded border px-2 py-0.5 text-[11px] ${assocColorBy === d.dim ? "border-sky-400 bg-sky-500/20 text-sky-300" : "border-white/10 hover:bg-white/10"}`}>{d.label}</button>
+              ))}
+            </div>
+            {assocColorBy && (
+              <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px]">
+                {assocColoring.legend.map((l) => (
+                  <span key={l.value} className="inline-flex items-center gap-1">
+                    <span className="inline-block h-2 w-2 rounded-full" style={{ background: l.color }} />
+                    <span className="max-w-[140px] truncate text-gray-300" title={l.value}>{l.value}</span>
+                    <span className="text-gray-500">{l.count}</span>
+                  </span>
+                ))}
+                {assocColoring.hasOther && (
+                  <span className="inline-flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#6b7280" }} /><span className="text-gray-400">other</span></span>
+                )}
+                {!assocColoring.legend.length && <span className="text-gray-500">No vessels in view to colour.</span>}
+              </div>
+            )}
+          </div>
+
+          {assocFilter && (
+            <div className="mt-2 flex items-center justify-between gap-2 rounded bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200">
+              <span className="truncate">Filtered: {ASSOC_DIM_LABEL[assocFilter.dim]} = <strong>{assocFilter.value}</strong> · whole DB{positions.data?.truncated ? " (capped 20k)" : ""}</span>
+              <button onClick={() => setAssocFilter(null)} className="shrink-0 rounded border border-amber-400/40 px-1.5 hover:bg-amber-500/20">Clear</button>
+            </div>
+          )}
+
+          <div className="mt-3 border-t border-white/10 pt-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[11px] text-gray-400">Group by</span>
+              <select value={assocGroupBy} onChange={(e) => setAssocGroupBy(e.target.value as AssociationDim)} className="rounded border border-white/10 bg-black/40 px-1.5 py-0.5 text-[11px]">
+                {ASSOC_DIMS.map((d) => <option key={d.dim} value={d.dim}>{d.label}</option>)}
+              </select>
+              {assoc.data?.status === "ok" && <span className="text-[10px] text-gray-500">{assoc.data?.distinct} groups · {assoc.data?.total} vessels</span>}
+            </div>
+
+            <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px]">
+              <span className="text-gray-400">Add to fleet</span>
+              <select value={fleetTarget} onChange={(e) => setFleetTarget(e.target.value)} className="rounded border border-white/10 bg-black/40 px-1.5 py-0.5">
+                <option value="new">New fleet (auto-named)</option>
+                {(monitorGroups.data?.groups ?? []).map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+              </select>
+            </div>
+            {fleetMsg && <p className="mt-1 text-[10px] text-emerald-300/90">{fleetMsg}</p>}
+
+            <ul className="mt-1.5 max-h-72 space-y-0.5 overflow-y-auto pr-1">
+              {assoc.isLoading ? <li className="text-[11px] text-gray-400">Loading…</li>
+                : assoc.data?.status === "error" ? <li className="text-[11px] text-amber-400">Unavailable: {assoc.data?.error}</li>
+                : (assoc.data?.groups ?? []).map((g) => (
+                  <li key={g.value} className="flex items-center justify-between gap-2 rounded bg-white/5 px-1.5 py-1 text-[11px]">
+                    <span className="truncate text-gray-200" title={g.value}>{g.value} <span className="text-gray-500">· {g.count}</span></span>
+                    <span className="flex shrink-0 gap-1">
+                      <button onClick={() => setAssocFilter({ dim: assocGroupBy, value: g.value })} className="rounded border border-sky-500/40 bg-sky-500/10 px-1.5 py-0.5 text-[10px] text-sky-200 hover:bg-sky-500/20">Filter</button>
+                      <button onClick={() => addToFleet(g)} className="rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-200 hover:bg-emerald-500/20">→ Fleet</button>
+                    </span>
+                  </li>
+                ))}
+            </ul>
+            <p className="mt-1 text-[10px] text-gray-600">“→ Fleet” adds that group’s vessels (those with a position) to the chosen fleet in the Vessel Registry. Owner/manager links are single-source — corroborate before acting.</p>
+          </div>
         </Modal>
       )}
 
