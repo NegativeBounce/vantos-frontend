@@ -5,7 +5,7 @@ import MapView, { type PickedVessel, type ViewportBbox, type FlyTo, type Footpri
 import Modal from "../components/Modal";
 import MonitorButton from "../components/MonitorButton";
 import { usePersistentState } from "../lib/persist";
-import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, runAnomalyAnalysis, clearAnomalies, saveAnalysisSnapshot, getAnalysisSnapshots, getAnalysisSnapshot, deleteAnalysisSnapshot, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, createRegion, deleteRegion, getIngestionRuns, getBannedVessels, getVesselPortCalls, getAssociations, fleetFromAssociation, getMonitorGroups, addMonitoredVessel, getRegistryMap, type AreaSearchResult, type Anomaly, type Region, type VesselEnrichment, type VesselPosition, type AssociationDim, type AssociationFilter, type AssociationGroup, type BannedVessel } from "../lib/api";
+import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, runAnomalyAnalysis, clearAnomalies, saveAnalysisSnapshot, getAnalysisSnapshots, getAnalysisSnapshot, deleteAnalysisSnapshot, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, createRegion, deleteRegion, getIngestionRuns, getBannedVessels, getVesselPortCalls, getAssociations, fleetFromAssociation, getMonitorGroups, addMonitoredVessel, getRegistryMap, getSecurityEvents, refreshSecurity, type AreaSearchResult, type Anomaly, type Region, type VesselEnrichment, type VesselPosition, type AssociationDim, type AssociationFilter, type AssociationGroup, type BannedVessel } from "../lib/api";
 
 // Association dimensions for colour/filter/grouping (must match the backend whitelist).
 const ASSOC_DIMS: { dim: AssociationDim; label: string }[] = [
@@ -189,12 +189,12 @@ const SAT_CADENCE_OPTIONS = [
   { v: 720, l: "12h" },
   { v: 1440, l: "24h" },
 ];
-type Tool = "vlayers" | "vessels" | "area" | "regions" | "gaps" | "analysis" | "activity" | "assoc" | "gnss" | "map";
-type Domain = "vessel" | "gnss";
-const DOMAINS: { key: Domain | "security"; label: string; stub?: boolean }[] = [
+type Tool = "vlayers" | "vessels" | "area" | "regions" | "gaps" | "analysis" | "activity" | "assoc" | "gnss" | "security" | "map";
+type Domain = "vessel" | "gnss" | "security";
+const DOMAINS: { key: Domain; label: string; stub?: boolean }[] = [
   { key: "vessel", label: "Vessel Intelligence" },
   { key: "gnss", label: "GNSS / Signals" },
-  { key: "security", label: "Security", stub: true },
+  { key: "security", label: "Security" },
 ];
 
 // Collection-activity labels: map an ingestion endpoint to a friendly source + cost class.
@@ -528,6 +528,18 @@ export default function Workspace() {
   const [monitoredOn, setMonitoredOn] = usePersistentState("monitoredOn", false);
   const monitoredQ = useQuery({ queryKey: ["registryMap"], queryFn: getRegistryMap, enabled: monitoredOn, refetchInterval: 120000 });
   const monitoredPoints = useMemo(() => (monitoredOn ? monitoredQ.data?.points ?? [] : []), [monitoredOn, monitoredQ.data]);
+
+  // Security / Geopolitical domain (Phase C) — GDELT news + NGA-MSI ASAM incidents per region.
+  const [securityOn, setSecurityOn] = usePersistentState("securityOn", false);
+  const [securityDays, setSecurityDays] = usePersistentState<number>("securityDays", 30);
+  const securityQ = useQuery({
+    queryKey: ["security", selectedRegionIds, securityDays],
+    queryFn: () => getSecurityEvents({ regionIds: selectedRegionIds.length ? selectedRegionIds : undefined, days: securityDays }),
+    enabled: tool === "security" || securityOn,
+    refetchInterval: 300000,
+  });
+  const securityEvents = useMemo(() => securityQ.data?.events ?? [], [securityQ.data]);
+  const [securityMsg, setSecurityMsg] = useState<string | null>(null);
   const bannedPortsQ = useQuery({
     queryKey: ["bannedPorts", bannedPortMmsi],
     queryFn: () => getVesselPortCalls(bannedPortMmsi as string),
@@ -809,6 +821,9 @@ export default function Workspace() {
     gnss: [
       { key: "gnss", label: "Interference" },
     ],
+    security: [
+      { key: "security", label: "Security Events", badge: securityOn ? securityEvents.length : undefined },
+    ],
   };
   const PLATFORM_TOOLS: ToolDef[] = [
     { key: "regions", label: "Regions", badge: regionCount },
@@ -856,6 +871,7 @@ export default function Workspace() {
         onPathPoint={(lng, lat) => setPathVerts((v) => [...v, [lng, lat] as [number, number]])}
         banned={bannedList}
         monitored={monitoredPoints}
+        security={securityOn ? securityEvents : []}
         bannedPorts={bannedPorts}
         onBannedClick={(mmsi) => setBannedPortMmsi(mmsi)}
         onMonitorBanned={(v: BannedVessel) => {
@@ -1033,6 +1049,43 @@ export default function Workspace() {
             </div>
           )}
           <p className="mt-2 text-[10px] text-gray-600">GNSS interference is aircraft-derived (ADS-B), kept as its own domain (not vessel data). Detection tuning is a known follow-up.</p>
+        </Modal>
+      )}
+
+      {tool === "security" && (
+        <Modal title="Security / Geopolitical" onClose={() => setTool(null)} width="w-[30rem]">
+          <div className="rounded border border-sky-500/30 bg-sky-500/10 p-2 text-[11px] leading-snug text-sky-200/90">
+            {securityQ.data?.disclaimer ?? "GDELT items are media reporting (OSINT signal — corroborate, not confirmed). NGA-MSI ASAM items are official anti-shipping incident reports (NGA)."}
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
+            <label className="flex items-center gap-2 text-gray-300">
+              <input type="checkbox" checked={securityOn} onChange={(e) => setSecurityOn(e.target.checked)} /> Show on map
+            </label>
+            <label className="flex items-center gap-1 text-gray-400">Window
+              <select value={securityDays} onChange={(e) => setSecurityDays(Number(e.target.value))} className="rounded bg-black/30 px-1.5 py-0.5 ring-1 ring-white/10">
+                {[7, 14, 30, 90].map((d) => <option key={d} value={d}>{d}d</option>)}
+              </select>
+            </label>
+            <button onClick={async () => { const r = await refreshSecurity(); setSecurityMsg(r.note ?? "Collecting…"); setTimeout(() => setSecurityMsg(null), 5000); }}
+              className="rounded border border-white/10 px-2 py-0.5 hover:bg-white/10" title="Trigger a collection now (GDELT throttled; ~minutes)">Collect now</button>
+          </div>
+          {securityMsg && <p className="mt-1 text-[10px] text-emerald-300">{securityMsg}</p>}
+          <p className="mt-1 text-[10px] text-gray-500">{selectedRegionIds.length ? "Filtered to selected regions." : "All regions."} · {securityEvents.length} event{securityEvents.length === 1 ? "" : "s"} (last {securityDays}d)</p>
+          <ul className="mt-1.5 max-h-72 space-y-1 overflow-y-auto pr-1">
+            {securityQ.isLoading ? <li className="text-[11px] text-gray-400">Loading…</li>
+              : securityQ.data?.status === "error" ? <li className="text-[11px] text-amber-400">Unavailable: {securityQ.data?.error}</li>
+              : securityEvents.length === 0 ? <li className="text-[11px] text-gray-500">No security events yet. Collection runs every 6h; use "Collect now" to trigger (select regions to scope, or leave all).</li>
+              : securityEvents.map((ev) => (
+                <li key={ev.id} className="rounded bg-white/5 px-1.5 py-1 text-[11px]">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className={`shrink-0 rounded px-1 text-[9px] uppercase ${ev.source === "nga_msi" ? "bg-orange-500/20 text-orange-300" : "bg-sky-500/20 text-sky-300"}`}>{ev.source === "nga_msi" ? "ASAM" : "news"}</span>
+                    <span className="text-[9px] text-gray-500">{ev.occurredAt ? new Date(ev.occurredAt).toLocaleDateString() : ""}</span>
+                  </div>
+                  <div className="mt-0.5 text-gray-200">{ev.url ? <a href={ev.url} target="_blank" rel="noreferrer" className="underline hover:text-sky-300">{ev.title}</a> : ev.title}</div>
+                </li>
+              ))}
+          </ul>
+          <p className="mt-2 text-[10px] text-gray-600">First new intelligence domain (Phase C). Feeds the Region Dossier's Security section. GDELT throttled (rate-limited); NGA-MSI ASAM is authoritative + attributed.</p>
         </Modal>
       )}
 

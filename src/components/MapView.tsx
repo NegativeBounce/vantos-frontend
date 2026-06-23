@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import mapboxgl from "mapbox-gl";
-import type { VesselPosition, AisGap, BannedVessel, RegistryMapPoint } from "../lib/api";
+import type { VesselPosition, AisGap, BannedVessel, RegistryMapPoint, SecurityEvent } from "../lib/api";
 
 mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN ?? "";
 
@@ -104,6 +104,26 @@ function bannedData(banned: BannedVessel[] | null): GeoJSON.FeatureCollection {
 }
 
 type BannedPorts = { mmsi: string; loading: boolean; error: string | null; records: Record<string, string | number | boolean>[] } | null;
+
+// Security events — NGA-MSI ASAM incidents (authoritative) vs GDELT news (OSINT signal).
+function securityData(events: SecurityEvent[] | null): GeoJSON.FeatureCollection {
+  if (!events || !events.length) return EMPTY;
+  return {
+    type: "FeatureCollection",
+    features: events
+      .filter((e) => e.latitude != null && e.longitude != null && Number.isFinite(e.latitude) && Number.isFinite(e.longitude))
+      .map((e) => ({
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [e.longitude as number, e.latitude as number] },
+        properties: {
+          color: e.source === "nga_msi" ? "#f97316" : "#60a5fa",
+          title: e.title ?? (e.source === "nga_msi" ? "ASAM incident" : "News"),
+          source: e.source === "nga_msi" ? "NGA-MSI ASAM" : "GDELT (media)",
+          url: e.url ?? "",
+        },
+      })),
+  };
+}
 
 const MONITORED_DEFAULT_COLOR = "#38bdf8";
 // Monitored/registry vessels as colored points (color = vessel colour → fleet colour → default).
@@ -356,6 +376,7 @@ export default function MapView({
   onBannedClick,
   onMonitorBanned,
   monitored = null,
+  security = null,
 }: {
   vessels: VesselPosition[];
   selection: Selection;
@@ -387,6 +408,7 @@ export default function MapView({
   onBannedClick?: (mmsi: string) => void;
   onMonitorBanned?: (v: BannedVessel) => void;
   monitored?: RegistryMapPoint[] | null;
+  security?: SecurityEvent[] | null;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
@@ -888,6 +910,28 @@ export default function MapView({
       map.on("mouseenter", "monitored-dot", () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", "monitored-dot", () => (map.getCanvas().style.cursor = boxModeRef.current || pickModeRef.current ? "crosshair" : ""));
 
+      // Security events — ASAM incidents (orange diamonds-ish) + GDELT news (blue).
+      map.addSource("security", { type: "geojson", data: EMPTY });
+      map.addLayer({
+        id: "security-dot", type: "circle", source: "security",
+        paint: { "circle-radius": 6, "circle-color": ["get", "color"], "circle-stroke-color": "#0b0f14", "circle-stroke-width": 1.5, "circle-opacity": 0.9 },
+      });
+      const securityPopup = new mapboxgl.Popup({ closeButton: true, offset: 12, className: "vantos-popup", maxWidth: "300px" });
+      map.on("click", "security-dot", (e) => {
+        if (boxModeRef.current || drawBoxModeRef.current || pathModeRef.current) return;
+        const f = e.features?.[0];
+        if (!f) return;
+        const p = f.properties as { title?: string; source?: string; url?: string };
+        const link = p.url ? `<a href="${p.url}" target="_blank" rel="noreferrer" style="color:#7dd3fc">open source ↗</a>` : "";
+        const html = `<div style="font:12px system-ui;color:#e5e7eb;max-width:280px"><div style="font-weight:600">${(p.title || "Security event")}</div>`
+          + `<div style="color:#9ca3af;margin-top:2px">${p.source ?? ""}</div>`
+          + (link ? `<div style="margin-top:3px">${link}</div>` : "")
+          + `<div style="color:#6b7280;margin-top:4px;font-size:10px">${p.source === "GDELT (media)" ? "Media reporting — corroborate, not confirmed." : "NGA official ASAM report."}</div></div>`;
+        securityPopup.setLngLat((f.geometry as GeoJSON.Point).coordinates as [number, number]).setHTML(html).addTo(map);
+      });
+      map.on("mouseenter", "security-dot", () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", "security-dot", () => (map.getCanvas().style.cursor = boxModeRef.current || pickModeRef.current ? "crosshair" : ""));
+
       // Click empty map → in draw mode add a polygon vertex; otherwise drop a search center.
       map.on("click", (e) => {
         if (pathModeRef.current) { onPathPointRef.current?.(e.lngLat.lng, e.lngLat.lat); return; }
@@ -1152,6 +1196,18 @@ export default function MapView({
     if (map.getSource("monitored")) apply();
     else map.once("load", apply);
   }, [monitored]);
+
+  // Security events → source data.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      const src = map.getSource("security") as mapboxgl.GeoJSONSource | undefined;
+      if (src) src.setData(securityData(security));
+    };
+    if (map.getSource("security")) apply();
+    else map.once("load", apply);
+  }, [security]);
 
   // Blink the fresh (active, ≤6h) banned dots; historic ones stay dim + static.
   useEffect(() => {

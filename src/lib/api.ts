@@ -563,6 +563,22 @@ export const enrichRegistry = (input: { ids?: string[]; groupId?: string }) =>
 export const bulkRemoveRegistry = (input: { ids?: string[]; groupId?: string }) =>
   apiPost<{ status: string; removed?: number; error?: string }>("/api/registry/vessels/bulk-remove", input);
 
+// ---- Security / Geopolitical domain (Phase C) ----
+export type SecurityEvent = {
+  id: string; regionId: string | null; source: string; eventType: string | null; severity: string | null;
+  title: string | null; summary: string | null; url: string | null;
+  latitude: number | null; longitude: number | null; occurredAt: string | null; details: unknown;
+};
+export const getSecurityEvents = (opts?: { regionIds?: string[]; days?: number; source?: string }) => {
+  const q = new URLSearchParams();
+  if (opts?.regionIds?.length) q.set("regionIds", opts.regionIds.join(","));
+  if (opts?.days) q.set("days", String(opts.days));
+  if (opts?.source) q.set("source", opts.source);
+  return apiGet<{ status: string; disclaimer: string; count: number; events: SecurityEvent[]; error?: string }>(`/api/security/events?${q.toString()}`);
+};
+export const refreshSecurity = () =>
+  apiPost<{ status: string; note?: string; error?: string }>("/api/security/refresh", {});
+
 // Monitored vessels as colored map points.
 export type RegistryMapPoint = {
   mmsi: string | null; name: string | null; groupName: string | null; color: string | null;
