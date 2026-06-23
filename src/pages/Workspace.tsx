@@ -5,7 +5,7 @@ import MapView, { type PickedVessel, type ViewportBbox, type FlyTo, type Footpri
 import Modal from "../components/Modal";
 import MonitorButton from "../components/MonitorButton";
 import { usePersistentState } from "../lib/persist";
-import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, runAnomalyAnalysis, clearAnomalies, saveAnalysisSnapshot, getAnalysisSnapshots, getAnalysisSnapshot, deleteAnalysisSnapshot, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, createRegion, deleteRegion, getIngestionRuns, getBannedVessels, getVesselPortCalls, getAssociations, fleetFromAssociation, getMonitorGroups, type AreaSearchResult, type Anomaly, type Region, type VesselEnrichment, type VesselPosition, type AssociationDim, type AssociationFilter, type AssociationGroup } from "../lib/api";
+import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, runAnomalyAnalysis, clearAnomalies, saveAnalysisSnapshot, getAnalysisSnapshots, getAnalysisSnapshot, deleteAnalysisSnapshot, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, createRegion, deleteRegion, getIngestionRuns, getBannedVessels, getVesselPortCalls, getAssociations, fleetFromAssociation, getMonitorGroups, addMonitoredVessel, type AreaSearchResult, type Anomaly, type Region, type VesselEnrichment, type VesselPosition, type AssociationDim, type AssociationFilter, type AssociationGroup, type BannedVessel } from "../lib/api";
 
 // Association dimensions for colour/filter/grouping (must match the backend whitelist).
 const ASSOC_DIMS: { dim: AssociationDim; label: string }[] = [
@@ -852,6 +852,13 @@ export default function Workspace() {
         banned={bannedList}
         bannedPorts={bannedPorts}
         onBannedClick={(mmsi) => setBannedPortMmsi(mmsi)}
+        onMonitorBanned={(v: BannedVessel) => {
+          // Banned vessels are added WITHOUT auto-enrich (operator gate) — enrich later in the registry.
+          void addMonitoredVessel({
+            mmsi: v.mmsi, imo: v.imo, name: v.name, vesselType: v.type, flag: v.flag,
+            lastLatitude: v.latitude, lastLongitude: v.longitude, enrich: false,
+          }).then(() => { qc.invalidateQueries({ queryKey: ["monitor-groups"] }); qc.invalidateQueries({ queryKey: ["monitored-vessels"] }); }).catch(() => {});
+        }}
       />
 
       {/* Domain rail + grouped tools */}

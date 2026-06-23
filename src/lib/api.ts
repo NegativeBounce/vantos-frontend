@@ -511,6 +511,9 @@ export type MonitoredVessel = {
   notes: string | null;
   lastLatitude: number | null;
   lastLongitude: number | null;
+  monitorCadenceMinutes: number;
+  lastMonitoredAt: string | null;
+  enrichedAt: string | null;
   addedAt: string;
   updatedAt: string;
 };
@@ -543,8 +546,27 @@ export const getMonitoredVessels = (opts?: { groupId?: string; unassigned?: bool
 export const addMonitoredVessel = (input: {
   mmsi?: string | null; imo?: string | null; name?: string | null; vesselType?: string | null;
   flag?: string | null; groupId?: string | null; notes?: string | null;
-  lastLatitude?: number | null; lastLongitude?: number | null;
-}) => apiPost<{ status: string; vessel?: MonitoredVessel; error?: string }>("/api/registry/vessels", input);
+  lastLatitude?: number | null; lastLongitude?: number | null; enrich?: boolean;
+}) => apiPost<{ status: string; vessel?: MonitoredVessel; enriched?: boolean; error?: string }>("/api/registry/vessels", input);
+
+// Local-DB name search for "add by name".
+export type VesselMatch = { mmsi: string | null; imo: string | null; name: string | null; type: string | null; flag: string | null };
+export const searchRegistryVessels = (name: string) =>
+  apiGet<{ status: string; matches: VesselMatch[] }>(`/api/registry/search?name=${encodeURIComponent(name)}`);
+
+// Bulk enrich selected vessels or a whole group (background; count = API calls).
+export const enrichRegistry = (input: { ids?: string[]; groupId?: string }) =>
+  apiPost<{ status: string; count?: number; capped?: boolean; cap?: number; note?: string; error?: string }>("/api/registry/enrich", input);
+
+// Bulk remove selected vessels or a whole group.
+export const bulkRemoveRegistry = (input: { ids?: string[]; groupId?: string }) =>
+  apiPost<{ status: string; removed?: number; error?: string }>("/api/registry/vessels/bulk-remove", input);
+
+// Monitor cadence (minutes; 0 = off) per vessel or per group.
+export const setVesselMonitor = (id: string, minutes: number) =>
+  apiPost<{ status: string; vessel?: MonitoredVessel; error?: string }>(`/api/registry/vessels/${id}/monitor`, { minutes });
+export const setGroupMonitor = (groupId: string, minutes: number) =>
+  apiPost<{ status: string; updated?: number; error?: string }>(`/api/registry/groups/${groupId}/monitor`, { minutes });
 
 export async function updateMonitoredVessel(id: string, input: { groupId?: string | null; notes?: string | null }) {
   const res = await authedFetch(`/api/registry/vessels/${id}`, {

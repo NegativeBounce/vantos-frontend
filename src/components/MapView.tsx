@@ -147,8 +147,18 @@ function bannedPopupHTML(v: BannedVessel, ports: BannedPorts): string {
     ${row("Nav status", v.navStatus)}
     ${row("Destination", v.destination)}
     <div style="border-top:1px solid rgba(255,255,255,.1);margin-top:5px;padding-top:4px">${portsHtml}</div>
+    <button data-monitor-banned style="margin-top:6px;width:100%;padding:4px;border:1px solid rgba(16,185,129,.4);background:rgba(16,185,129,.12);color:#a7f3d0;border-radius:4px;cursor:pointer;font:11px system-ui">+ Monitor (no auto-enrich)</button>
     <div style="color:#6b7280;margin-top:5px;font-size:10px">Data Docked ban-list determination — corroborate with an authoritative sanctions list.</div>
   </div>`;
+}
+
+// The banned popup is imperative HTML; wire its "+ Monitor" button to a React callback after
+// each setHTML. Banned vessels are added WITHOUT auto-enrich (operator gate) — the user enriches
+// them explicitly in the registry.
+function wireBannedMonitor(popup: mapboxgl.Popup, v: BannedVessel, cb?: (v: BannedVessel) => void): void {
+  const btn = popup.getElement()?.querySelector<HTMLButtonElement>("[data-monitor-banned]");
+  if (!btn || !cb) return;
+  btn.onclick = () => { cb(v); btn.textContent = "✓ Monitoring"; btn.disabled = true; btn.style.opacity = "0.6"; };
 }
 
 function circleFeature(lng: number, lat: number, radiusKm: number): GeoJSON.Feature {
@@ -328,6 +338,7 @@ export default function MapView({
   banned = null,
   bannedPorts = null,
   onBannedClick,
+  onMonitorBanned,
 }: {
   vessels: VesselPosition[];
   selection: Selection;
@@ -357,6 +368,7 @@ export default function MapView({
   banned?: BannedVessel[] | null;
   bannedPorts?: BannedPorts;
   onBannedClick?: (mmsi: string) => void;
+  onMonitorBanned?: (v: BannedVessel) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
@@ -381,9 +393,11 @@ export default function MapView({
   const bannedPopupRef = useRef<mapboxgl.Popup | null>(null);
   const bannedPopupMmsiRef = useRef<string | null>(null);
   const onBannedClickRef = useRef(onBannedClick);
+  const onMonitorBannedRef = useRef(onMonitorBanned);
   const bannedPortsRef = useRef<BannedPorts>(bannedPorts);
   const blinkOnRef = useRef(true);
   useEffect(() => { onBannedClickRef.current = onBannedClick; }, [onBannedClick]);
+  useEffect(() => { onMonitorBannedRef.current = onMonitorBanned; }, [onMonitorBanned]);
   useEffect(() => { bannedPortsRef.current = bannedPorts; }, [bannedPorts]);
   useEffect(() => { onMapClickRef.current = onMapClick; }, [onMapClick]);
   useEffect(() => { onVesselClickRef.current = onVesselClick; }, [onVesselClick]);
@@ -820,6 +834,7 @@ export default function MapView({
         const cur = bannedPortsRef.current;
         const ports: BannedPorts = cur && cur.mmsi === mmsi ? cur : { mmsi, loading: true, error: null, records: [] };
         bannedPopup.setLngLat((f.geometry as GeoJSON.Point).coordinates as [number, number]).setHTML(bannedPopupHTML(v, ports)).addTo(map);
+        wireBannedMonitor(bannedPopup, v, onMonitorBannedRef.current);
         if (mmsi && onBannedClickRef.current) onBannedClickRef.current(mmsi); // fetch port history
       });
       map.on("mouseenter", "banned-dot", () => (map.getCanvas().style.cursor = "pointer"));
@@ -1099,7 +1114,7 @@ export default function MapView({
     const popup = bannedPopupRef.current;
     if (!popup || !bannedPorts || !popup.isOpen() || bannedPopupMmsiRef.current !== bannedPorts.mmsi) return;
     const v = bannedByMmsiRef.current.get(bannedPorts.mmsi);
-    if (v) popup.setHTML(bannedPopupHTML(v, bannedPorts));
+    if (v) { popup.setHTML(bannedPopupHTML(v, bannedPorts)); wireBannedMonitor(popup, v, onMonitorBannedRef.current); }
   }, [bannedPorts]);
 
   return <div ref={containerRef} className="absolute inset-0" style={{ minHeight: "100%" }} />;
