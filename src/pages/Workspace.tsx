@@ -1082,6 +1082,13 @@ export default function Workspace() {
               {assoc.data?.status === "ok" && <span className="text-[10px] text-gray-500">{assoc.data?.distinct} groups · {assoc.data?.total} vessels</span>}
             </div>
 
+            {(assocGroupBy === "owner" || assocGroupBy === "manager" || assocGroupBy === "class_society") && (
+              <p className="mt-1 text-[10px] text-amber-300/80">Owner / manager / class come from <span className="text-gray-300">Data Docked enrichment only</span> — "(unknown)" means a vessel hasn't been enriched yet. Enrich vessels or a fleet in the Vessel Registry to populate these.</p>
+            )}
+            {assocGroupBy === "flag" && (
+              <p className="mt-1 text-[10px] text-gray-500">Flag is derived from the MMSI country code (MID) when AIS/enrichment doesn't provide one.</p>
+            )}
+
             <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px]">
               <span className="text-gray-400">Add to fleet</span>
               <select value={fleetTarget} onChange={(e) => setFleetTarget(e.target.value)} className="rounded border border-white/10 bg-black/40 px-1.5 py-0.5">
