@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import MapView, { type PickedVessel, type ViewportBbox, type FlyTo, type Footprint } from "../components/MapView";
 import Modal from "../components/Modal";
@@ -565,6 +565,7 @@ export default function Workspace() {
 
   // Cross-page snap: the Registry's "Show on map" navigates here with a fly target.
   const location = useLocation();
+  const navigate = useNavigate();
   useEffect(() => {
     const st = location.state as { flyMmsi?: string; flyLat?: number; flyLon?: number } | null;
     if (st && (st.flyMmsi || (st.flyLat != null && st.flyLon != null))) {
@@ -1729,6 +1730,13 @@ export default function Workspace() {
           <Modal title={r.name} onClose={() => setRegionModalId(null)}>
             <div className="text-[11px] text-gray-500">{r.description ?? r.type}</div>
             <div className="mt-0.5 text-[10px] text-gray-500">{r.collectAis ? fmtAgo(r.lastAisPullAt) : "AIS collection off"}</div>
+
+            <button
+              onClick={() => navigate(`/dossier/${r.id}`)}
+              className="mt-3 w-full rounded border border-sky-500/40 bg-sky-500/10 px-2 py-1.5 text-[12px] text-sky-200 hover:bg-sky-500/20"
+            >
+              View Region Dossier →
+            </button>
 
             <label className="mt-3 flex items-center gap-2 text-gray-300">
               <input type="checkbox" checked={sel} onChange={() => toggleRegionSelect(r.id)} />

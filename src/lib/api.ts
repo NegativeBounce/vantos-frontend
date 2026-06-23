@@ -109,6 +109,45 @@ export async function deleteRegion(id: string): Promise<{ status: string; error?
   return data;
 }
 
+// ---- Region Dossier (Phase B, D-67) ----
+export type DossierStatus = "ok" | "no_data" | "not_enabled" | "stale" | "error";
+export type DossierConfidence = "high" | "medium" | "low" | "indeterminate" | null;
+export type DossierItem = {
+  title: string; detail?: string; severity?: string; occurredAt?: string | null;
+  confidence?: DossierConfidence; source: string; link?: string | null;
+};
+export type DossierSection = {
+  domain: string; key: string; title: string;
+  status: DossierStatus; confidence: DossierConfidence;
+  provenance: { sources: string[]; asOf: string | null; method: string };
+  summary: Record<string, string | number>;
+  items: DossierItem[];
+  disclaimer: string | null;
+};
+export type Dossier = {
+  regionId: string; regionName: string; generatedAt: string; windowDays: number;
+  sections: DossierSection[];
+};
+export const getRegionDossier = (regionId: string, windowDays = 7) =>
+  apiGet<{ status: string; dossier: Dossier; error?: string }>(`/api/regions/${regionId}/dossier?window=${windowDays}`);
+
+export type DossierSnapshotMeta = {
+  id: string; regionId: string | null; regionName: string | null; windowDays: number; label: string; createdAt: string;
+};
+export type DossierSnapshot = DossierSnapshotMeta & { dossier: Dossier };
+export const saveDossierSnapshot = (regionId: string, label: string, windowDays = 7) =>
+  apiPost<{ status: string; id?: string; error?: string }>(`/api/regions/${regionId}/dossier/snapshots`, { label, window: windowDays });
+export const getDossierSnapshots = (regionId: string) =>
+  apiGet<{ status: string; snapshots: DossierSnapshotMeta[] }>(`/api/regions/${regionId}/dossier/snapshots`);
+export const getDossierSnapshot = (id: string) =>
+  apiGet<{ status: string; snapshot: DossierSnapshot }>(`/api/dossier/snapshots/${id}`);
+export async function deleteDossierSnapshot(id: string): Promise<{ status: string; error?: string }> {
+  const res = await authedFetch(`/api/dossier/snapshots/${id}`, { method: "DELETE" });
+  const data = (await res.json().catch(() => ({}))) as { status: string; error?: string };
+  if (!res.ok) throw new Error(data?.error || `${res.status} ${res.statusText}`);
+  return data;
+}
+
 export async function setRegionCollection(
   id: string,
   input: { collectAis?: boolean; collectAdsb?: boolean; collectAisSatellite?: boolean; aisPullCadenceMinutes?: number; analyze?: boolean; analyzeDurationMinutes?: number | null; footprintPath?: number[][] | null }
