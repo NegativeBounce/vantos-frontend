@@ -6,8 +6,8 @@ import {
   getMonitorGroups, createMonitorGroup, updateMonitorGroup, deleteMonitorGroup,
   getMonitoredVessels, updateMonitoredVessel, removeMonitoredVessel,
   addMonitoredVessel, searchRegistryVessels, enrichRegistry, bulkRemoveRegistry,
-  setVesselMonitor, setGroupMonitor, enrichVessel,
-  type VesselMatch, type MonitoredVessel,
+  setVesselMonitor, setGroupMonitor, enrichVessel, getBanList,
+  type VesselMatch, type MonitoredVessel, type BanListRow,
 } from "../lib/api";
 
 type Scope = { kind: "all" } | { kind: "unassigned" } | { kind: "group"; id: string; name: string };
@@ -49,9 +49,76 @@ function asIdentifier(raw: string): { mmsi?: string; imo?: string } {
   return { mmsi: d || raw };
 }
 
+// Ban-list tab (item 4): the full Data Docked ban list, all fields per row, with a "+ Monitor"
+// action (adds to the registry WITHOUT auto-enrich, per the gate).
+function BanListTab() {
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ["ban-list"], queryFn: getBanList });
+  const [msg, setMsg] = useState<string | null>(null);
+
+  if (q.isLoading) return <Placeholder>Loading ban list…</Placeholder>;
+  if (q.data?.status !== "ok") return <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-300">Ban list unavailable: {q.data?.error ?? "error"}</div>;
+  const rows = q.data.rows ?? [];
+  const keys = [...new Set(rows.flatMap((r) => Object.keys(r.record)))].slice(0, 12);
+
+  async function monitor(r: BanListRow) {
+    if (!r.mmsi && !r.imo) return;
+    const res = await addMonitoredVessel({ mmsi: r.mmsi, imo: r.imo, name: r.name, enrich: false });
+    if (res.status === "ok") {
+      setMsg(`Monitoring ${r.name || r.mmsi || r.imo} (not auto-enriched — enrich it in Watchlist)`);
+      setTimeout(() => setMsg(null), 4000);
+      qc.invalidateQueries({ queryKey: ["ban-list"] });
+      qc.invalidateQueries({ queryKey: ["monitored-vessels"] });
+      qc.invalidateQueries({ queryKey: ["monitor-groups"] });
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-white/10 bg-black/30 p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <h2 className="text-sm font-medium text-gray-200">Ban list <span className="text-gray-500">· {q.data.total}{q.data.truncated ? ` (showing ${rows.length})` : ""}</span></h2>
+      </div>
+      {msg && <div className="mb-2 rounded border border-emerald-500/30 bg-emerald-500/10 p-2 text-xs text-emerald-300">{msg}</div>}
+      <p className="mb-2 text-[11px] text-gray-500">{q.data.disclaimer}</p>
+      {rows.length === 0 ? (
+        <Placeholder>The ban list is empty or unavailable.</Placeholder>
+      ) : (
+        <div className="overflow-auto">
+          <table className="w-full text-left text-[11px]">
+            <thead className="text-gray-500">
+              <tr className="border-b border-white/10">
+                {keys.map((k) => <th key={k} className="py-1.5 pr-2 font-medium">{k}</th>)}
+                <th className="py-1.5 font-medium">Monitor</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => (
+                <tr key={(r.mmsi ?? r.imo ?? "") + i} className="border-b border-white/5 align-top">
+                  {keys.map((k) => <td key={k} className="py-1 pr-2 text-gray-300">{r.record[k] === undefined ? "—" : String(r.record[k])}</td>)}
+                  <td className="py-1">
+                    {r.monitored ? (
+                      <span className="text-[10px] text-emerald-400">✓ monitoring</span>
+                    ) : r.mmsi || r.imo ? (
+                      <button onClick={() => monitor(r)} className="rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-200 hover:bg-emerald-500/20">+ Monitor</button>
+                    ) : (
+                      <span className="text-[10px] text-gray-600">no id</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="mt-3 text-[11px] text-gray-600">Adding from the ban list does not auto-enrich (avoids mass API spend). Enrich monitored vessels explicitly in the Watchlist tab.</p>
+    </div>
+  );
+}
+
 export default function RegistryPage() {
   const qc = useQueryClient();
   const navigate = useNavigate();
+  const [tab, setTab] = useState<"watchlist" | "banlist">("watchlist");
   const [scope, setScope] = useState<Scope>({ kind: "all" });
   const [newGroup, setNewGroup] = useState("");
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -170,6 +237,14 @@ export default function RegistryPage() {
     <PageShell title="Vessel Registry" subtitle="A curated watchlist. Add vessels by MMSI/IMO or name (auto-enriched on add), organise into fleets, and monitor on a cadence.">
       {err && <div className="mb-3 rounded border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-300">{err}</div>}
       {msg && <div className="mb-3 rounded border border-emerald-500/30 bg-emerald-500/10 p-2 text-xs text-emerald-300">{msg}</div>}
+
+      {/* Tabs */}
+      <div className="mb-4 flex gap-1 border-b border-white/10 text-sm">
+        <button onClick={() => setTab("watchlist")} className={`-mb-px border-b-2 px-3 py-1.5 ${tab === "watchlist" ? "border-sky-400 text-sky-300" : "border-transparent text-gray-400 hover:text-gray-200"}`}>Watchlist</button>
+        <button onClick={() => setTab("banlist")} className={`-mb-px border-b-2 px-3 py-1.5 ${tab === "banlist" ? "border-sky-400 text-sky-300" : "border-transparent text-gray-400 hover:text-gray-200"}`}>Ban list</button>
+      </div>
+
+      {tab === "banlist" ? <BanListTab /> : (<>
 
       {/* Add vessel */}
       <div className="mb-4 rounded-lg border border-white/10 bg-black/30 p-3">
@@ -334,6 +409,8 @@ export default function RegistryPage() {
       <p className="mt-4 text-[11px] text-gray-600">
         Monitoring refreshes a vessel's position on its cadence (Data Docked — credits). Auto-enrich applies to single adds and map picks; fleet and ban-list additions are enriched only when you choose to. Vessels are keyed by MMSI.
       </p>
+
+      </>)}
     </PageShell>
   );
 }

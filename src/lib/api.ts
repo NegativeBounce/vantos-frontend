@@ -562,6 +562,14 @@ export const enrichRegistry = (input: { ids?: string[]; groupId?: string }) =>
 export const bulkRemoveRegistry = (input: { ids?: string[]; groupId?: string }) =>
   apiPost<{ status: string; removed?: number; error?: string }>("/api/registry/vessels/bulk-remove", input);
 
+// Full ban list for the registry Ban-list tab (item 4).
+export type BanListRow = {
+  record: Record<string, string | number | boolean>;
+  mmsi: string | null; imo: string | null; name: string | null; monitored: boolean;
+};
+export const getBanList = () =>
+  apiGet<{ status: string; total: number; truncated: boolean; rows: BanListRow[]; disclaimer?: string; error?: string }>("/api/ban-list");
+
 // Monitor cadence (minutes; 0 = off) per vessel or per group.
 export const setVesselMonitor = (id: string, minutes: number) =>
   apiPost<{ status: string; vessel?: MonitoredVessel; error?: string }>(`/api/registry/vessels/${id}/monitor`, { minutes });
