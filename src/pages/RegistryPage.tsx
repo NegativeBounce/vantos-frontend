@@ -1,4 +1,4 @@
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import PageShell, { Placeholder } from "../components/PageShell";
@@ -20,7 +20,10 @@ function cadenceLabel(m: number): string { return MONITOR_OPTIONS.find((o) => o.
 
 // Inline enriched detail ("all rows returned once enriched") — fetched on expand.
 function EnrichedDetail({ mmsi }: { mmsi: string }) {
+  const qc = useQueryClient();
   const q = useQuery({ queryKey: ["enrich", mmsi], queryFn: () => enrichVessel(mmsi) });
+  // Expanding enriches the vessel (cached) → refresh the table so its name/type/flag fill in.
+  useEffect(() => { if (q.data?.status === "ok") qc.invalidateQueries({ queryKey: ["monitored-vessels"] }); }, [q.data?.status, qc]);
   if (q.isLoading) return <div className="p-2 text-[11px] text-gray-500">Loading enrichment…</div>;
   if (q.data?.status !== "ok") return <div className="p-2 text-[11px] text-amber-400">No enrichment: {q.data?.error ?? "unavailable"}</div>;
   const e = q.data;
