@@ -5,7 +5,7 @@ import MapView, { type PickedVessel, type ViewportBbox, type FlyTo, type Footpri
 import Modal from "../components/Modal";
 import MonitorButton from "../components/MonitorButton";
 import { usePersistentState } from "../lib/persist";
-import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, runAnomalyAnalysis, clearAnomalies, saveAnalysisSnapshot, getAnalysisSnapshots, getAnalysisSnapshot, deleteAnalysisSnapshot, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, createRegion, deleteRegion, getIngestionRuns, getBannedVessels, getVesselPortCalls, getAssociations, fleetFromAssociation, getMonitorGroups, addMonitoredVessel, type AreaSearchResult, type Anomaly, type Region, type VesselEnrichment, type VesselPosition, type AssociationDim, type AssociationFilter, type AssociationGroup, type BannedVessel } from "../lib/api";
+import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, runAnomalyAnalysis, clearAnomalies, saveAnalysisSnapshot, getAnalysisSnapshots, getAnalysisSnapshot, deleteAnalysisSnapshot, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, createRegion, deleteRegion, getIngestionRuns, getBannedVessels, getVesselPortCalls, getAssociations, fleetFromAssociation, getMonitorGroups, addMonitoredVessel, getRegistryMap, type AreaSearchResult, type Anomaly, type Region, type VesselEnrichment, type VesselPosition, type AssociationDim, type AssociationFilter, type AssociationGroup, type BannedVessel } from "../lib/api";
 
 // Association dimensions for colour/filter/grouping (must match the backend whitelist).
 const ASSOC_DIMS: { dim: AssociationDim; label: string }[] = [
@@ -523,6 +523,11 @@ export default function Workspace() {
   const bannedList = useMemo(() => (bannedOn ? banned.data?.vessels ?? [] : []), [bannedOn, banned.data]);
   const [bannedPortMmsi, setBannedPortMmsi] = useState<string | null>(null);
   const [showUnlocated, setShowUnlocated] = useState(false);
+
+  // Monitored / registry vessels layer — colored points (vessel colour → fleet colour → default).
+  const [monitoredOn, setMonitoredOn] = usePersistentState("monitoredOn", false);
+  const monitoredQ = useQuery({ queryKey: ["registryMap"], queryFn: getRegistryMap, enabled: monitoredOn, refetchInterval: 120000 });
+  const monitoredPoints = useMemo(() => (monitoredOn ? monitoredQ.data?.points ?? [] : []), [monitoredOn, monitoredQ.data]);
   const bannedPortsQ = useQuery({
     queryKey: ["bannedPorts", bannedPortMmsi],
     queryFn: () => getVesselPortCalls(bannedPortMmsi as string),
@@ -850,6 +855,7 @@ export default function Workspace() {
         pathVertices={pathMode ? pathVerts : null}
         onPathPoint={(lng, lat) => setPathVerts((v) => [...v, [lng, lat] as [number, number]])}
         banned={bannedList}
+        monitored={monitoredPoints}
         bannedPorts={bannedPorts}
         onBannedClick={(mmsi) => setBannedPortMmsi(mmsi)}
         onMonitorBanned={(v: BannedVessel) => {
@@ -960,6 +966,13 @@ export default function Workspace() {
             <p className="mt-1 rounded bg-amber-500/10 p-1.5 text-[10px] leading-snug text-amber-300/90">
               AIS Gap / Dark Shipping Indicator — not a confirmed dark-vessel detection. See the AIS Gaps tab for the full caveat.
             </p>
+          )}
+          <label className="mt-2 flex items-center gap-2 text-gray-300">
+            <input type="checkbox" checked={monitoredOn} onChange={(e) => setMonitoredOn(e.target.checked)} />
+            Monitored (registry) <span className="text-[10px] text-sky-400/70">(colored by vessel / fleet)</span>
+          </label>
+          {monitoredOn && (
+            <p className="ml-6 text-[10px] text-gray-500">{monitoredPoints.length} monitored vessel{monitoredPoints.length === 1 ? "" : "s"} with a position · set colours in the Vessel Registry</p>
           )}
           <label className="mt-2 flex items-center gap-2 text-gray-300">
             <input type="checkbox" checked={bannedOn} onChange={(e) => setBannedOn(e.target.checked)} />

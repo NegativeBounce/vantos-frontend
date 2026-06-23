@@ -509,6 +509,7 @@ export type MonitoredVessel = {
   vesselType: string | null;
   flag: string | null;
   notes: string | null;
+  color: string | null;
   lastLatitude: number | null;
   lastLongitude: number | null;
   monitorCadenceMinutes: number;
@@ -562,6 +563,14 @@ export const enrichRegistry = (input: { ids?: string[]; groupId?: string }) =>
 export const bulkRemoveRegistry = (input: { ids?: string[]; groupId?: string }) =>
   apiPost<{ status: string; removed?: number; error?: string }>("/api/registry/vessels/bulk-remove", input);
 
+// Monitored vessels as colored map points.
+export type RegistryMapPoint = {
+  mmsi: string | null; name: string | null; groupName: string | null; color: string | null;
+  latitude: number; longitude: number; ingestedAt: string | null;
+};
+export const getRegistryMap = () =>
+  apiGet<{ status: string; count: number; points: RegistryMapPoint[] }>("/api/registry/map");
+
 // Full ban list for the registry Ban-list tab (item 4).
 export type BanListRow = {
   record: Record<string, string | number | boolean>;
@@ -576,7 +585,7 @@ export const setVesselMonitor = (id: string, minutes: number) =>
 export const setGroupMonitor = (groupId: string, minutes: number) =>
   apiPost<{ status: string; updated?: number; error?: string }>(`/api/registry/groups/${groupId}/monitor`, { minutes });
 
-export async function updateMonitoredVessel(id: string, input: { groupId?: string | null; notes?: string | null }) {
+export async function updateMonitoredVessel(id: string, input: { groupId?: string | null; notes?: string | null; color?: string | null }) {
   const res = await authedFetch(`/api/registry/vessels/${id}`, {
     method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(input),
   });

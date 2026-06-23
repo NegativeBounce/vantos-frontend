@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import mapboxgl from "mapbox-gl";
-import type { VesselPosition, AisGap, BannedVessel } from "../lib/api";
+import type { VesselPosition, AisGap, BannedVessel, RegistryMapPoint } from "../lib/api";
 
 mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN ?? "";
 
@@ -104,6 +104,22 @@ function bannedData(banned: BannedVessel[] | null): GeoJSON.FeatureCollection {
 }
 
 type BannedPorts = { mmsi: string; loading: boolean; error: string | null; records: Record<string, string | number | boolean>[] } | null;
+
+const MONITORED_DEFAULT_COLOR = "#38bdf8";
+// Monitored/registry vessels as colored points (color = vessel colour → fleet colour → default).
+function monitoredData(points: RegistryMapPoint[] | null): GeoJSON.FeatureCollection {
+  if (!points || !points.length) return EMPTY;
+  return {
+    type: "FeatureCollection",
+    features: points
+      .filter((p) => Number.isFinite(p.latitude) && Number.isFinite(p.longitude))
+      .map((p) => ({
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [p.longitude, p.latitude] },
+        properties: { color: p.color || MONITORED_DEFAULT_COLOR, name: p.name ?? p.mmsi ?? "", group: p.groupName ?? "", mmsi: p.mmsi ?? "" },
+      })),
+  };
+}
 
 function esc(s: unknown): string {
   return String(s ?? "").replace(/[&<>"]/g, (c) =>
@@ -339,6 +355,7 @@ export default function MapView({
   bannedPorts = null,
   onBannedClick,
   onMonitorBanned,
+  monitored = null,
 }: {
   vessels: VesselPosition[];
   selection: Selection;
@@ -369,6 +386,7 @@ export default function MapView({
   bannedPorts?: BannedPorts;
   onBannedClick?: (mmsi: string) => void;
   onMonitorBanned?: (v: BannedVessel) => void;
+  monitored?: RegistryMapPoint[] | null;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
@@ -840,6 +858,36 @@ export default function MapView({
       map.on("mouseenter", "banned-dot", () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", "banned-dot", () => (map.getCanvas().style.cursor = boxModeRef.current || pickModeRef.current ? "crosshair" : ""));
 
+      // Monitored / registry vessels — colored points (per-vessel colour over fleet colour).
+      map.addSource("monitored", { type: "geojson", data: EMPTY });
+      map.addLayer({
+        id: "monitored-halo", type: "circle", source: "monitored",
+        paint: { "circle-radius": 11, "circle-color": ["get", "color"], "circle-opacity": 0.18 },
+      });
+      map.addLayer({
+        id: "monitored-dot", type: "circle", source: "monitored",
+        paint: { "circle-radius": 6, "circle-color": ["get", "color"], "circle-stroke-color": "#0b0f14", "circle-stroke-width": 1.5, "circle-opacity": 0.95 },
+      });
+      map.addLayer({
+        id: "monitored-label", type: "symbol", source: "monitored",
+        layout: { "text-field": ["get", "name"], "text-size": 10, "text-offset": [0, 1.1], "text-anchor": "top", "text-optional": true },
+        paint: { "text-color": "#e5e7eb", "text-halo-color": "#0b0f14", "text-halo-width": 1.2 },
+      });
+      const monitoredPopup = new mapboxgl.Popup({ closeButton: true, offset: 12, className: "vantos-popup", maxWidth: "260px" });
+      map.on("click", "monitored-dot", (e) => {
+        if (boxModeRef.current || drawBoxModeRef.current || pathModeRef.current) return;
+        const f = e.features?.[0];
+        if (!f) return;
+        const p = f.properties as { name?: string; group?: string; mmsi?: string };
+        const html = `<div style="font:12px system-ui;color:#e5e7eb"><div style="font-weight:600">${(p.name || p.mmsi || "monitored vessel")}</div>`
+          + (p.group ? `<div style="color:#9ca3af">Fleet: ${p.group}</div>` : "")
+          + (p.mmsi ? `<div style="color:#9ca3af">MMSI ${p.mmsi}</div>` : "")
+          + `<div style="color:#6b7280;margin-top:3px;font-size:10px">Registry · monitored</div></div>`;
+        monitoredPopup.setLngLat((f.geometry as GeoJSON.Point).coordinates as [number, number]).setHTML(html).addTo(map);
+      });
+      map.on("mouseenter", "monitored-dot", () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", "monitored-dot", () => (map.getCanvas().style.cursor = boxModeRef.current || pickModeRef.current ? "crosshair" : ""));
+
       // Click empty map → in draw mode add a polygon vertex; otherwise drop a search center.
       map.on("click", (e) => {
         if (pathModeRef.current) { onPathPointRef.current?.(e.lngLat.lng, e.lngLat.lat); return; }
@@ -1092,6 +1140,18 @@ export default function MapView({
     if (map.getSource("banned")) apply();
     else map.once("load", apply);
   }, [banned]);
+
+  // Monitored / registry vessels → colored source data.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      const src = map.getSource("monitored") as mapboxgl.GeoJSONSource | undefined;
+      if (src) src.setData(monitoredData(monitored));
+    };
+    if (map.getSource("monitored")) apply();
+    else map.once("load", apply);
+  }, [monitored]);
 
   // Blink the fresh (active, ≤6h) banned dots; historic ones stay dim + static.
   useEffect(() => {

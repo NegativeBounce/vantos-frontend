@@ -314,6 +314,7 @@ export default function RegistryPage() {
                     <button onClick={() => setScope({ kind: "group", id: g.id, name: g.name })} className={`min-w-0 flex-1 truncate px-2 py-1 text-left ${scope.kind === "group" && scope.id === g.id ? "text-sky-300" : "text-gray-300"}`}>
                       {g.name} <span className="text-gray-500">{g.vesselCount}</span>
                     </button>
+                    <input type="color" value={g.color ?? "#38bdf8"} onChange={(e) => run(() => updateMonitorGroup(g.id, { color: e.target.value }))} title="Fleet point colour (map)" className="h-4 w-4 shrink-0 cursor-pointer rounded border border-white/10 bg-transparent p-0" />
                     <button onClick={() => { setRenaming(g.id); setRenameVal(g.name); }} title="Rename" className="px-1 text-xs text-gray-500 opacity-0 group-hover:opacity-100 hover:text-gray-200">✎</button>
                     <button onClick={() => { if (confirm(`Delete group "${g.name}"? Its vessels become Unassigned.`)) run(() => deleteMonitorGroup(g.id)); }} title="Delete group" className="px-1 pr-2 text-xs text-gray-500 opacity-0 group-hover:opacity-100 hover:text-red-300">🗑</button>
                   </div>
@@ -368,6 +369,7 @@ export default function RegistryPage() {
                     <th className="py-1.5 pr-2 font-medium">MMSI</th>
                     <th className="py-1.5 pr-2 font-medium">Type</th>
                     <th className="py-1.5 pr-2 font-medium">Flag</th>
+                    <th className="py-1.5 pr-2 font-medium">Color</th>
                     <th className="py-1.5 pr-2 font-medium">Enriched</th>
                     <th className="py-1.5 pr-2 font-medium">Monitor</th>
                     <th className="py-1.5 pr-2 font-medium">Group</th>
@@ -388,6 +390,12 @@ export default function RegistryPage() {
                         <td className="py-1.5 pr-2 font-mono text-gray-300">{v.mmsi || "—"}</td>
                         <td className="py-1.5 pr-2 text-gray-400">{v.vesselType || "—"}</td>
                         <td className="py-1.5 pr-2 text-gray-400">{v.flag || "—"}</td>
+                        <td className="py-1.5 pr-2">
+                          <div className="flex items-center gap-1">
+                            <input type="color" value={v.color ?? "#38bdf8"} onChange={(e) => run(() => updateMonitoredVessel(v.id, { color: e.target.value }))} title="Point colour (overrides fleet colour)" className="h-5 w-6 cursor-pointer rounded border border-white/10 bg-transparent p-0" />
+                            {v.color && <button onClick={() => run(() => updateMonitoredVessel(v.id, { color: null }))} title="Use fleet / default colour" className="text-[9px] text-gray-500 hover:text-gray-300">clear</button>}
+                          </div>
+                        </td>
                         <td className="py-1.5 pr-2">{v.enrichedAt ? <span className="text-emerald-400" title={new Date(v.enrichedAt).toLocaleString()}>✓</span> : <span className="text-gray-600">—</span>}</td>
                         <td className="py-1.5 pr-2">
                           <select value={v.monitorCadenceMinutes} onChange={(e) => run(() => setVesselMonitor(v.id, Number(e.target.value)))} className={`rounded bg-black/30 px-1.5 py-0.5 text-[11px] ring-1 ring-white/10 ${v.monitorCadenceMinutes > 0 ? "text-emerald-300" : "text-gray-400"}`}>
@@ -408,7 +416,7 @@ export default function RegistryPage() {
                         </td>
                       </tr>
                       {expanded === (v.mmsi ?? v.id) && v.mmsi && (
-                        <tr><td colSpan={9} className="p-0"><EnrichedDetail mmsi={v.mmsi} /></td></tr>
+                        <tr><td colSpan={10} className="p-0"><EnrichedDetail mmsi={v.mmsi} /></td></tr>
                       )}
                     </Fragment>
                   ))}
