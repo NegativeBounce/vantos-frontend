@@ -194,6 +194,16 @@ export default function RegistryPage() {
     setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   }
   const selCount = selected.size;
+  const visibleIds = vesselList.map((v) => v.id);
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
+  function toggleSelectAll() {
+    setSelected((s) => {
+      const n = new Set(s);
+      if (allVisibleSelected) visibleIds.forEach((id) => n.delete(id));
+      else visibleIds.forEach((id) => n.add(id));
+      return n;
+    });
+  }
 
   async function enrichSelected() {
     if (!selCount) return;
@@ -350,7 +360,7 @@ export default function RegistryPage() {
               <table className="w-full text-left text-xs">
                 <thead className="text-gray-500">
                   <tr className="border-b border-white/10">
-                    <th className="w-6 py-1.5" />
+                    <th className="w-6 py-1.5"><input type="checkbox" checked={allVisibleSelected} onChange={toggleSelectAll} title="Select all in view" /></th>
                     <th className="py-1.5 pr-2 font-medium">Vessel</th>
                     <th className="py-1.5 pr-2 font-medium">MMSI</th>
                     <th className="py-1.5 pr-2 font-medium">Type</th>
