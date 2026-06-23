@@ -95,6 +95,9 @@ export type Region = {
   footprintPath: number[][] | null;
   lastAisPullAt: string | null;
   aisPullCadenceMinutes: number;
+  detectAisGaps: boolean;
+  satPullCadenceMinutes: number;
+  lastSatPullAt: string | null;
 };
 export const getRegions = () => apiGet<{ status: string; regions: Region[] }>("/api/regions");
 
@@ -150,7 +153,7 @@ export async function deleteDossierSnapshot(id: string): Promise<{ status: strin
 
 export async function setRegionCollection(
   id: string,
-  input: { collectAis?: boolean; collectAdsb?: boolean; collectAisSatellite?: boolean; aisPullCadenceMinutes?: number; analyze?: boolean; analyzeDurationMinutes?: number | null; footprintPath?: number[][] | null }
+  input: { collectAis?: boolean; collectAdsb?: boolean; collectAisSatellite?: boolean; aisPullCadenceMinutes?: number; detectAisGaps?: boolean; satPullCadenceMinutes?: number; analyze?: boolean; analyzeDurationMinutes?: number | null; footprintPath?: number[][] | null }
 ): Promise<{ status: string; region?: Region; error?: string }> {
   const res = await authedFetch(`/api/regions/${id}`, {
     method: "PATCH",
@@ -248,7 +251,6 @@ export type AisGapResult = {
   satelliteNote?: string;
   gapMinutes: number;
   verify: boolean;
-  streamFresh: boolean;
   count: number;
   gaps: AisGap[];
 };

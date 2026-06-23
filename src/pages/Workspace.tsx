@@ -181,6 +181,14 @@ const CADENCE_OPTIONS = [
   { v: 180, l: "3h" },
   { v: 60, l: "1h" },
 ];
+// Satellite-pull cadence options (item 2): 1h / 3h / 6h / 12h / 24h.
+const SAT_CADENCE_OPTIONS = [
+  { v: 60, l: "1h" },
+  { v: 180, l: "3h" },
+  { v: 360, l: "6h" },
+  { v: 720, l: "12h" },
+  { v: 1440, l: "24h" },
+];
 type Tool = "vlayers" | "vessels" | "area" | "regions" | "gaps" | "analysis" | "activity" | "assoc" | "gnss" | "map";
 type Domain = "vessel" | "gnss";
 const DOMAINS: { key: Domain | "security"; label: string; stub?: boolean }[] = [
@@ -1316,8 +1324,9 @@ export default function Workspace() {
           <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] leading-snug text-amber-200/90">
             <strong className="text-amber-300">AIS Gap / Dark Shipping Indicator — not a confirmed dark-vessel detection.</strong>{" "}
             {gaps.data?.disclaimer ??
-              "An AIS gap means no AIS position was received within the window; it may result from terrestrial coverage limits, equipment faults, or feed interruptions — not necessarily intentional AIS-off behavior."}
+              "A gap means no satellite position was collected within the expected revisit window; it may result from satellite revisit gaps, the vessel being outside collected tiles, or equipment faults — not necessarily intentional AIS-off behavior."}
           </div>
+          <p className="mt-1 text-[10px] text-gray-500">Satellite-only — terrestrial AIS isn't dependable for gaps. Enable per region in the region options (turn on <span className="text-gray-400">Sat</span> + <span className="text-gray-400">Detect AIS gaps</span>).</p>
 
           <label className="mt-2 flex items-center gap-2 text-gray-300">
             <input type="checkbox" checked={gapsOn} onChange={(e) => setGapsOn(e.target.checked)} />
@@ -1329,23 +1338,20 @@ export default function Workspace() {
           </label>
           {verifySat && (
             <p className="mt-1 rounded bg-sky-500/10 p-1.5 text-[10px] leading-snug text-sky-300/90">
-              Bounces each terrestrial gap off Data Docked satellite to separate coverage gaps from genuine
+              Re-checks each gap with a fresh Data Docked bulk lookup to separate revisit gaps from genuine
               dark vessels. Spends Data Docked credits (one bulk call per refresh, cached 30&nbsp;min). Vessels
-              seen on satellite are marked active and reappear on the map.
+              with a fresh fix are marked active and reappear on the map.
             </p>
           )}
 
           {!gapsOn ? (
-            <p className="mt-2 text-gray-500">Enable the layer to scan AIS-collecting regions for vessels not seen in &gt;30 min (within 24h).</p>
+            <p className="mt-2 text-gray-500">Enable the layer to list satellite gaps in regions where the AIS-gap feature is on.</p>
           ) : gaps.isLoading ? (
             <p className="mt-2 text-gray-500">Scanning…</p>
           ) : (gapList?.length ?? 0) === 0 ? (
-            <p className="mt-2 text-gray-500">No AIS gaps in collecting regions right now.</p>
+            <p className="mt-2 text-gray-500">No satellite gaps in gap-enabled regions right now.</p>
           ) : (
             <>
-              {gaps.data && !gaps.data.streamFresh && (
-                <p className="mt-2 text-[10px] text-amber-400/80">Feed appears stale — all indicators down-rated to low confidence.</p>
-              )}
               <div className="mt-2 text-gray-400">
                 <span className="font-mono text-amber-400">{gapList?.length}</span> gap{gapList?.length === 1 ? "" : "s"} (≥{gaps.data?.gapMinutes ?? 30} min)
                 {verifySat && confirmedCount > 0 && (
@@ -1789,6 +1795,30 @@ export default function Workspace() {
                 ADS-B <span className="text-[10px] text-gray-500">— GNSS interference (10-min)</span>
               </label>
             </div>
+
+            {/* AIS Gaps / dark-shipping — satellite-only; per-region opt-in + its own Sat cadence (item 2). */}
+            {r.collectAisSatellite ? (
+              <div className="mt-3 border-t border-white/10 pt-2">
+                <label className="flex items-center gap-2 text-[12px] text-gray-300">
+                  <input type="checkbox" checked={r.detectAisGaps}
+                    onChange={async (e) => { await setRegionCollection(r.id, { detectAisGaps: e.target.checked }); qc.invalidateQueries({ queryKey: ["regions"] }); }} />
+                  Detect AIS gaps <span className="text-[10px] text-gray-500">— satellite-only dark-shipping (this region)</span>
+                </label>
+                <label className="mt-2 flex items-center justify-between text-[12px] text-gray-300">
+                  <span>Satellite pull cadence</span>
+                  <select
+                    value={r.satPullCadenceMinutes}
+                    onChange={async (e) => { await setRegionCollection(r.id, { satPullCadenceMinutes: Number(e.target.value) }); qc.invalidateQueries({ queryKey: ["regions"] }); }}
+                    className="rounded bg-black/30 px-2 py-1 text-[11px] ring-1 ring-white/10"
+                  >
+                    {SAT_CADENCE_OPTIONS.map((o) => <option key={o.v} value={o.v}>{o.l}</option>)}
+                  </select>
+                </label>
+                <p className="text-[10px] text-gray-600">How often the satellite pull runs (credits). The gap window scales with this cadence (~1.5×).</p>
+              </div>
+            ) : (
+              <p className="mt-2 text-[10px] text-gray-600">Enable <span className="text-gray-400">Sat</span> to use AIS-gap / dark-shipping detection (satellite-only — terrestrial AIS isn't dependable for gaps).</p>
+            )}
 
             <label className="mt-3 flex items-center justify-between text-[12px] text-gray-300">
               <span>AIS pull cadence</span>
