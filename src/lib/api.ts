@@ -579,7 +579,8 @@ export const getSecurityEvents = (opts?: { regionIds?: string[]; days?: number; 
 };
 export type SecurityStats = {
   status: string; total: number; last24h: number; incidents: number; news: number; aiExtracted: number;
-  lastIngested: string | null; bySource: { source: string; n: number; last: string | null }[]; error?: string;
+  lastIngested: string | null; bySource: { source: string; n: number; last: string | null }[];
+  aiLastStatus?: { ok: boolean; detail: string } | null; error?: string;
 };
 export const getSecurityStats = () => apiGet<SecurityStats>("/api/security/stats");
 export const refreshSecurity = () =>

@@ -1088,6 +1088,7 @@ export default function Workspace() {
                   <span><b className="text-gray-100">{s.last24h}</b> in 24h</span>
                   <span>{s.incidents} incident{s.incidents === 1 ? "" : "s"} · {s.news} news</span>
                   <span>AI-extracted: <b className={s.aiExtracted ? "text-emerald-300" : "text-gray-500"}>{s.aiExtracted}</b></span>
+                  {s.aiLastStatus && <span>AI: <b className={s.aiLastStatus.ok ? "text-emerald-300" : "text-amber-300"}>{s.aiLastStatus.ok ? "ok" : s.aiLastStatus.detail}</b></span>}
                   <span className="text-gray-500">last {rel}</span>
                 </div>
                 {s.bySource.length > 0 && (
