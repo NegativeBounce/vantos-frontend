@@ -5,7 +5,7 @@ import MapView, { type PickedVessel, type ViewportBbox, type FlyTo, type Footpri
 import Modal from "../components/Modal";
 import MonitorButton from "../components/MonitorButton";
 import { usePersistentState } from "../lib/persist";
-import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, runAnomalyAnalysis, clearAnomalies, saveAnalysisSnapshot, getAnalysisSnapshots, getAnalysisSnapshot, deleteAnalysisSnapshot, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, createRegion, deleteRegion, getIngestionRuns, getBannedVessels, getVesselPortCalls, getAssociations, fleetFromAssociation, getMonitorGroups, addMonitoredVessel, getRegistryMap, getSecurityEvents, refreshSecurity, type AreaSearchResult, type Anomaly, type Region, type VesselEnrichment, type VesselPosition, type AssociationDim, type AssociationFilter, type AssociationGroup, type BannedVessel } from "../lib/api";
+import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, runAnomalyAnalysis, clearAnomalies, saveAnalysisSnapshot, getAnalysisSnapshots, getAnalysisSnapshot, deleteAnalysisSnapshot, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, createRegion, deleteRegion, getIngestionRuns, getBannedVessels, getVesselPortCalls, getAssociations, fleetFromAssociation, getMonitorGroups, addMonitoredVessel, getRegistryMap, getSecurityEvents, getSecurityStats, refreshSecurity, type AreaSearchResult, type Anomaly, type Region, type VesselEnrichment, type VesselPosition, type AssociationDim, type AssociationFilter, type AssociationGroup, type BannedVessel } from "../lib/api";
 
 // Association dimensions for colour/filter/grouping (must match the backend whitelist).
 const ASSOC_DIMS: { dim: AssociationDim; label: string }[] = [
@@ -539,6 +539,13 @@ export default function Workspace() {
     refetchInterval: 300000,
   });
   const securityEvents = useMemo(() => securityQ.data?.events ?? [], [securityQ.data]);
+  // Filter-independent collection health — confirms what is actually stored regardless of filters.
+  const securityStatsQ = useQuery({
+    queryKey: ["securityStats"],
+    queryFn: getSecurityStats,
+    enabled: tool === "security",
+    refetchInterval: 60000,
+  });
   const [securityMsg, setSecurityMsg] = useState<string | null>(null);
   const bannedPortsQ = useQuery({
     queryKey: ["bannedPorts", bannedPortMmsi],
@@ -1066,15 +1073,38 @@ export default function Workspace() {
                 {[7, 14, 30, 90].map((d) => <option key={d} value={d}>{d}d</option>)}
               </select>
             </label>
-            <button onClick={async () => { const r = await refreshSecurity(); setSecurityMsg(r.note ?? "Collecting…"); setTimeout(() => setSecurityMsg(null), 5000); }}
-              className="rounded border border-white/10 px-2 py-0.5 hover:bg-white/10" title="GDELT news + NGA-MSI ASAM incidents (throttled; ~minutes)">Collect now</button>
+            <button onClick={async () => { const r = await refreshSecurity(); setSecurityMsg(r.note ?? "Collecting…"); setTimeout(() => { void securityStatsQ.refetch(); void securityQ.refetch(); }, 8000); setTimeout(() => setSecurityMsg(null), 9000); }}
+              className="rounded border border-white/10 px-2 py-0.5 hover:bg-white/10" title="ASAM incidents + RSS feeds (fast) + GDELT news (throttled)">Collect now</button>
           </div>
           {securityMsg && <p className="mt-1 text-[10px] text-emerald-300">{securityMsg}</p>}
+          {securityStatsQ.data?.status === "ok" && (() => {
+            const s = securityStatsQ.data;
+            const rel = s.lastIngested ? `${Math.max(0, Math.round((Date.now() - new Date(s.lastIngested).getTime()) / 60000))}m ago` : "never";
+            return (
+              <div className="mt-1.5 rounded border border-white/10 bg-black/20 p-1.5 text-[10px] text-gray-300">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                  <span className="text-gray-400">Collection health</span>
+                  <span><b className="text-gray-100">{s.total}</b> stored</span>
+                  <span><b className="text-gray-100">{s.last24h}</b> in 24h</span>
+                  <span>{s.incidents} incident{s.incidents === 1 ? "" : "s"} · {s.news} news</span>
+                  <span>AI-extracted: <b className={s.aiExtracted ? "text-emerald-300" : "text-gray-500"}>{s.aiExtracted}</b></span>
+                  <span className="text-gray-500">last {rel}</span>
+                </div>
+                {s.bySource.length > 0 && (
+                  <div className="mt-0.5 flex flex-wrap gap-1">
+                    {s.bySource.map((b) => (
+                      <span key={b.source} className="rounded bg-white/5 px-1 py-0.5">{b.source.startsWith("rss:") ? `RSS·${b.source.slice(4)}` : b.source}: {b.n}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
           <p className="mt-1 text-[10px] text-gray-500">{selectedRegionIds.length ? "Filtered to selected regions." : "All regions."} · {securityEvents.length} event{securityEvents.length === 1 ? "" : "s"} (last {securityDays}d)</p>
           <ul className="mt-1.5 max-h-72 space-y-1 overflow-y-auto pr-1">
             {securityQ.isLoading ? <li className="text-[11px] text-gray-400">Loading…</li>
               : securityQ.data?.status === "error" ? <li className="text-[11px] text-amber-400">Unavailable: {securityQ.data?.error}</li>
-              : securityEvents.length === 0 ? <li className="text-[11px] text-gray-500">No security events yet. Collection runs every 6h; use "Collect now" to trigger (select regions to scope, or leave all).</li>
+              : securityEvents.length === 0 ? <li className="text-[11px] text-gray-500">No events in this filter. Check "Collection health" above — if events are stored but none show here, they're outside the selected region(s) or window. Deselect regions / widen the window, or use "Collect now".</li>
               : securityEvents.map((ev) => (
                 <li key={ev.id} className="rounded bg-white/5 px-1.5 py-1 text-[11px]">
                   <div className="flex items-center justify-between gap-2">

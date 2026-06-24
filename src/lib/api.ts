@@ -577,6 +577,11 @@ export const getSecurityEvents = (opts?: { regionIds?: string[]; days?: number; 
   if (opts?.source) q.set("source", opts.source);
   return apiGet<{ status: string; disclaimer: string; count: number; events: SecurityEvent[]; error?: string }>(`/api/security/events?${q.toString()}`);
 };
+export type SecurityStats = {
+  status: string; total: number; last24h: number; incidents: number; news: number; aiExtracted: number;
+  lastIngested: string | null; bySource: { source: string; n: number; last: string | null }[]; error?: string;
+};
+export const getSecurityStats = () => apiGet<SecurityStats>("/api/security/stats");
 export const refreshSecurity = () =>
   apiPost<{ status: string; note?: string; error?: string }>("/api/security/refresh", {});
 export const refreshAdvisories = () =>
