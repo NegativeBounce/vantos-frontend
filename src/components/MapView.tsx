@@ -105,23 +105,33 @@ function bannedData(banned: BannedVessel[] | null): GeoJSON.FeatureCollection {
 
 type BannedPorts = { mmsi: string; loading: boolean; error: string | null; records: Record<string, string | number | boolean>[] } | null;
 
-// Security events — NGA-MSI ASAM incidents (authoritative) vs GDELT news (OSINT signal).
+// Security events — incidents (NGA-MSI ASAM / curated) coloured by severity; GDELT news = blue.
+const SEVERITY_COLOR: Record<string, string> = { high: "#ef4444", elevated: "#f97316", moderate: "#f59e0b", low: "#eab308" };
+const SEC_SOURCE_LABEL: Record<string, string> = {
+  nga_msi: "NGA-MSI ASAM", gdelt: "GDELT (media)", recaap_isc: "ReCAAP ISC", imb_prc: "IMB PRC", curated: "Curated incident",
+};
 function securityData(events: SecurityEvent[] | null): GeoJSON.FeatureCollection {
   if (!events || !events.length) return EMPTY;
   return {
     type: "FeatureCollection",
     features: events
       .filter((e) => e.latitude != null && e.longitude != null && Number.isFinite(e.latitude) && Number.isFinite(e.longitude))
-      .map((e) => ({
-        type: "Feature",
-        geometry: { type: "Point", coordinates: [e.longitude as number, e.latitude as number] },
-        properties: {
-          color: e.source === "gdelt" ? "#60a5fa" : "#f97316", // media = blue; official/advisory = orange
-          title: e.title ?? (e.source === "gdelt" ? "News" : "Incident/advisory"),
-          source: ({ nga_msi: "NGA-MSI ASAM", gdelt: "GDELT (media)", ukmto: "UKMTO", recaap: "ReCAAP ISC", mdat_gog: "MDAT-GoG" } as Record<string, string>)[e.source] ?? e.source,
-          url: e.url ?? "",
-        },
-      })),
+      .map((e) => {
+        const isNews = e.source === "gdelt";
+        return {
+          type: "Feature" as const,
+          geometry: { type: "Point" as const, coordinates: [e.longitude as number, e.latitude as number] },
+          properties: {
+            color: isNews ? "#60a5fa" : (SEVERITY_COLOR[e.severity ?? ""] ?? "#f97316"),
+            title: e.title ?? (isNews ? "News" : "Incident"),
+            source: SEC_SOURCE_LABEL[e.source] ?? e.source,
+            incidentType: e.incidentType ?? "",
+            severity: e.severity ?? "",
+            occurredAt: e.occurredAt ?? "",
+            url: e.url ?? "",
+          },
+        };
+      }),
   };
 }
 
@@ -921,12 +931,15 @@ export default function MapView({
         if (boxModeRef.current || drawBoxModeRef.current || pathModeRef.current) return;
         const f = e.features?.[0];
         if (!f) return;
-        const p = f.properties as { title?: string; source?: string; url?: string };
+        const p = f.properties as { title?: string; source?: string; url?: string; incidentType?: string; severity?: string; occurredAt?: string };
         const link = p.url ? `<a href="${p.url}" target="_blank" rel="noreferrer" style="color:#7dd3fc">open source ↗</a>` : "";
+        const when = p.occurredAt ? new Date(p.occurredAt).toLocaleDateString() : "";
+        const typeSev = [p.incidentType, p.severity].filter(Boolean).join(" · ");
         const html = `<div style="font:12px system-ui;color:#e5e7eb;max-width:280px"><div style="font-weight:600">${(p.title || "Security event")}</div>`
-          + `<div style="color:#9ca3af;margin-top:2px">${p.source ?? ""}</div>`
+          + (typeSev ? `<div style="color:#fca5a5;margin-top:2px;text-transform:capitalize">${typeSev.replace(/_/g, " ")}</div>` : "")
+          + `<div style="color:#9ca3af;margin-top:2px">${p.source ?? ""}${when ? " · " + when : ""}</div>`
           + (link ? `<div style="margin-top:3px">${link}</div>` : "")
-          + `<div style="color:#6b7280;margin-top:4px;font-size:10px">${p.source === "GDELT (media)" ? "Media reporting — corroborate, not confirmed." : "NGA official ASAM report."}</div></div>`;
+          + `<div style="color:#6b7280;margin-top:4px;font-size:10px">${p.source === "GDELT (media)" ? "Media reporting — corroborate, not confirmed." : "Official/curated incident report — single-source."}</div></div>`;
         securityPopup.setLngLat((f.geometry as GeoJSON.Point).coordinates as [number, number]).setHTML(html).addTo(map);
       });
       map.on("mouseenter", "security-dot", () => (map.getCanvas().style.cursor = "pointer"));

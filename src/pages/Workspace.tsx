@@ -5,7 +5,7 @@ import MapView, { type PickedVessel, type ViewportBbox, type FlyTo, type Footpri
 import Modal from "../components/Modal";
 import MonitorButton from "../components/MonitorButton";
 import { usePersistentState } from "../lib/persist";
-import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, runAnomalyAnalysis, clearAnomalies, saveAnalysisSnapshot, getAnalysisSnapshots, getAnalysisSnapshot, deleteAnalysisSnapshot, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, createRegion, deleteRegion, getIngestionRuns, getBannedVessels, getVesselPortCalls, getAssociations, fleetFromAssociation, getMonitorGroups, addMonitoredVessel, getRegistryMap, getSecurityEvents, refreshSecurity, refreshAdvisories, type AreaSearchResult, type Anomaly, type Region, type VesselEnrichment, type VesselPosition, type AssociationDim, type AssociationFilter, type AssociationGroup, type BannedVessel } from "../lib/api";
+import { getRegions, getPositions, getVesselTrack, getAisGaps, getGnssInterference, getAnomalies, runAnomalyAnalysis, clearAnomalies, saveAnalysisSnapshot, getAnalysisSnapshots, getAnalysisSnapshot, deleteAnalysisSnapshot, enrichVessel, getLatestPosition, searchArea, setRegionCollection, pullRegion, createRegion, deleteRegion, getIngestionRuns, getBannedVessels, getVesselPortCalls, getAssociations, fleetFromAssociation, getMonitorGroups, addMonitoredVessel, getRegistryMap, getSecurityEvents, refreshSecurity, type AreaSearchResult, type Anomaly, type Region, type VesselEnrichment, type VesselPosition, type AssociationDim, type AssociationFilter, type AssociationGroup, type BannedVessel } from "../lib/api";
 
 // Association dimensions for colour/filter/grouping (must match the backend whitelist).
 const ASSOC_DIMS: { dim: AssociationDim; label: string }[] = [
@@ -1067,9 +1067,7 @@ export default function Workspace() {
               </select>
             </label>
             <button onClick={async () => { const r = await refreshSecurity(); setSecurityMsg(r.note ?? "Collecting…"); setTimeout(() => setSecurityMsg(null), 5000); }}
-              className="rounded border border-white/10 px-2 py-0.5 hover:bg-white/10" title="GDELT + NGA-MSI ASAM (throttled; ~minutes)">Collect news/ASAM</button>
-            <button onClick={async () => { const r = await refreshAdvisories(); setSecurityMsg(r.note ?? "Collecting advisories…"); setTimeout(() => setSecurityMsg(null), 6000); }}
-              className="rounded border border-white/10 px-2 py-0.5 hover:bg-white/10" title="UKMTO / ReCAAP / MDAT-GoG via Firecrawl (needs the Firecrawl key)">Collect advisories</button>
+              className="rounded border border-white/10 px-2 py-0.5 hover:bg-white/10" title="GDELT news + NGA-MSI ASAM incidents (throttled; ~minutes)">Collect now</button>
           </div>
           {securityMsg && <p className="mt-1 text-[10px] text-emerald-300">{securityMsg}</p>}
           <p className="mt-1 text-[10px] text-gray-500">{selectedRegionIds.length ? "Filtered to selected regions." : "All regions."} · {securityEvents.length} event{securityEvents.length === 1 ? "" : "s"} (last {securityDays}d)</p>
@@ -1080,10 +1078,13 @@ export default function Workspace() {
               : securityEvents.map((ev) => (
                 <li key={ev.id} className="rounded bg-white/5 px-1.5 py-1 text-[11px]">
                   <div className="flex items-center justify-between gap-2">
-                    <span className={`shrink-0 rounded px-1 text-[9px] uppercase ${ev.source === "gdelt" ? "bg-sky-500/20 text-sky-300" : "bg-orange-500/20 text-orange-300"}`}>{({ nga_msi: "ASAM", gdelt: "news", ukmto: "UKMTO", recaap: "ReCAAP", mdat_gog: "MDAT" } as Record<string, string>)[ev.source] ?? ev.source}</span>
+                    <span className={`shrink-0 rounded px-1 text-[9px] uppercase ${ev.source === "gdelt" ? "bg-sky-500/20 text-sky-300" : "bg-orange-500/20 text-orange-300"}`}>{({ nga_msi: "ASAM", gdelt: "news", recaap_isc: "ReCAAP", imb_prc: "IMB", curated: "curated" } as Record<string, string>)[ev.source] ?? ev.source}</span>
                     <span className="text-[9px] text-gray-500">{ev.occurredAt ? new Date(ev.occurredAt).toLocaleDateString() : ""}</span>
                   </div>
                   <div className="mt-0.5 text-gray-200">{ev.url ? <a href={ev.url} target="_blank" rel="noreferrer" className="underline hover:text-sky-300">{ev.title}</a> : ev.title}</div>
+                  {(ev.incidentType || ev.severity) && ev.source !== "gdelt" && (
+                    <div className="mt-0.5 text-[9px] capitalize text-orange-300/80">{[ev.incidentType, ev.severity].filter(Boolean).join(" · ").replace(/_/g, " ")}</div>
+                  )}
                 </li>
               ))}
           </ul>

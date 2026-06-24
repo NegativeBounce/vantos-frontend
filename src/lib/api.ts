@@ -566,6 +566,7 @@ export const bulkRemoveRegistry = (input: { ids?: string[]; groupId?: string }) 
 // ---- Security / Geopolitical domain (Phase C) ----
 export type SecurityEvent = {
   id: string; regionId: string | null; source: string; eventType: string | null; severity: string | null;
+  incidentType: string | null;
   title: string | null; summary: string | null; url: string | null;
   latitude: number | null; longitude: number | null; occurredAt: string | null; details: unknown;
 };
