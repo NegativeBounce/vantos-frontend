@@ -578,6 +578,8 @@ export const getSecurityEvents = (opts?: { regionIds?: string[]; days?: number; 
 };
 export const refreshSecurity = () =>
   apiPost<{ status: string; note?: string; error?: string }>("/api/security/refresh", {});
+export const refreshAdvisories = () =>
+  apiPost<{ status: string; note?: string; error?: string }>("/api/advisories/refresh", {});
 
 // Monitored vessels as colored map points.
 export type RegistryMapPoint = {

@@ -116,9 +116,9 @@ function securityData(events: SecurityEvent[] | null): GeoJSON.FeatureCollection
         type: "Feature",
         geometry: { type: "Point", coordinates: [e.longitude as number, e.latitude as number] },
         properties: {
-          color: e.source === "nga_msi" ? "#f97316" : "#60a5fa",
-          title: e.title ?? (e.source === "nga_msi" ? "ASAM incident" : "News"),
-          source: e.source === "nga_msi" ? "NGA-MSI ASAM" : "GDELT (media)",
+          color: e.source === "gdelt" ? "#60a5fa" : "#f97316", // media = blue; official/advisory = orange
+          title: e.title ?? (e.source === "gdelt" ? "News" : "Incident/advisory"),
+          source: ({ nga_msi: "NGA-MSI ASAM", gdelt: "GDELT (media)", ukmto: "UKMTO", recaap: "ReCAAP ISC", mdat_gog: "MDAT-GoG" } as Record<string, string>)[e.source] ?? e.source,
           url: e.url ?? "",
         },
       })),
