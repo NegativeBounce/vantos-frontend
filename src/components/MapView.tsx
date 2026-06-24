@@ -105,11 +105,18 @@ function bannedData(banned: BannedVessel[] | null): GeoJSON.FeatureCollection {
 
 type BannedPorts = { mmsi: string; loading: boolean; error: string | null; records: Record<string, string | number | boolean>[] } | null;
 
-// Security events — incidents (NGA-MSI ASAM / curated) coloured by severity; GDELT news = blue.
+// Security events — incidents (NGA-MSI ASAM / curated) coloured by severity; news (GDELT / RSS) = blue.
 const SEVERITY_COLOR: Record<string, string> = { high: "#ef4444", elevated: "#f97316", moderate: "#f59e0b", low: "#eab308" };
 const SEC_SOURCE_LABEL: Record<string, string> = {
   nga_msi: "NGA-MSI ASAM", gdelt: "GDELT (media)", recaap_isc: "ReCAAP ISC", imb_prc: "IMB PRC", curated: "Curated incident",
 };
+const RSS_FEED_LABEL: Record<string, string> = {
+  gcaptain: "gCaptain", maritime_executive: "Maritime Executive", splash247: "Splash247",
+};
+function secSourceLabel(source: string): string {
+  if (source.startsWith("rss:")) { const k = source.slice(4); return `RSS · ${RSS_FEED_LABEL[k] ?? k}`; }
+  return SEC_SOURCE_LABEL[source] ?? source;
+}
 function securityData(events: SecurityEvent[] | null): GeoJSON.FeatureCollection {
   if (!events || !events.length) return EMPTY;
   return {
@@ -117,14 +124,15 @@ function securityData(events: SecurityEvent[] | null): GeoJSON.FeatureCollection
     features: events
       .filter((e) => e.latitude != null && e.longitude != null && Number.isFinite(e.latitude) && Number.isFinite(e.longitude))
       .map((e) => {
-        const isNews = e.source === "gdelt";
+        // Incidents carry a severity (→ severity colour); awareness/news has none (→ blue).
+        const isNews = !e.severity;
         return {
           type: "Feature" as const,
           geometry: { type: "Point" as const, coordinates: [e.longitude as number, e.latitude as number] },
           properties: {
             color: isNews ? "#60a5fa" : (SEVERITY_COLOR[e.severity ?? ""] ?? "#f97316"),
             title: e.title ?? (isNews ? "News" : "Incident"),
-            source: SEC_SOURCE_LABEL[e.source] ?? e.source,
+            source: secSourceLabel(e.source),
             incidentType: e.incidentType ?? "",
             severity: e.severity ?? "",
             occurredAt: e.occurredAt ?? "",

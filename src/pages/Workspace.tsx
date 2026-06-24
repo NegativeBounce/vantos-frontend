@@ -1078,7 +1078,7 @@ export default function Workspace() {
               : securityEvents.map((ev) => (
                 <li key={ev.id} className="rounded bg-white/5 px-1.5 py-1 text-[11px]">
                   <div className="flex items-center justify-between gap-2">
-                    <span className={`shrink-0 rounded px-1 text-[9px] uppercase ${ev.source === "gdelt" ? "bg-sky-500/20 text-sky-300" : "bg-orange-500/20 text-orange-300"}`}>{({ nga_msi: "ASAM", gdelt: "news", recaap_isc: "ReCAAP", imb_prc: "IMB", curated: "curated" } as Record<string, string>)[ev.source] ?? ev.source}</span>
+                    <span className={`shrink-0 rounded px-1 text-[9px] uppercase ${ev.source === "gdelt" || ev.source.startsWith("rss:") ? "bg-sky-500/20 text-sky-300" : "bg-orange-500/20 text-orange-300"}`}>{ev.source.startsWith("rss:") ? `RSS·${ev.source.slice(4)}` : (({ nga_msi: "ASAM", gdelt: "news", recaap_isc: "ReCAAP", imb_prc: "IMB", curated: "curated" } as Record<string, string>)[ev.source] ?? ev.source)}</span>
                     <span className="text-[9px] text-gray-500">{ev.occurredAt ? new Date(ev.occurredAt).toLocaleDateString() : ""}</span>
                   </div>
                   <div className="mt-0.5 text-gray-200">{ev.url ? <a href={ev.url} target="_blank" rel="noreferrer" className="underline hover:text-sky-300">{ev.title}</a> : ev.title}</div>
